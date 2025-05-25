@@ -20,7 +20,7 @@ const userRoute = require('./controllers/user/userRoute');
 
 const app = express();
 
-app.set('trust proxy', false);
+app.set('trust proxy', 1);
 
 const logger = winston.createLogger({
   level: 'info',
