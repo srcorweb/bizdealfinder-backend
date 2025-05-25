@@ -10,8 +10,6 @@ const connectDB = async () => {
   try {
     await mongoose.connect(DB_STRING, {
       ssl: true,
-      sslValidate: true,
-      sslCA: undefined,
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
