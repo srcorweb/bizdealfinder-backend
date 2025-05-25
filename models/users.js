@@ -1,0 +1,70 @@
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
+const HashMethods = require("../config/HashMethode");
+
+const userSchema = new Schema({
+  fullName: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  country: {
+    type: String,
+    required: true,
+    default: 'IN',
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  role: {
+    type: String,
+    enum: ['user', 'admin'],
+    default: 'user',
+    required: true,
+  },
+  profile: {
+    type: String,
+    required: false,
+  },
+  password: {
+    type: String,
+    required: false
+  },
+  isVerified: {
+    type: Boolean,
+    default: false
+  },
+  verificationToken: {
+    type: String,
+    default: null
+  },
+  plan: {
+    name: { type: String, default: 'Free' },
+    price: { type: Number, default: 0 }
+  },
+  billingInfo: {
+    cardNumber: { type: String, default: '' },
+    expiry: { type: String, default: '' },
+    cvv: { type: String, default: '' }
+  }
+}, {
+  timestamps: true
+});
+
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+  if (this.password && this.isModified('password')) {
+    try {
+      this.password = await HashMethods.hashPassword(this.password);
+    } catch (error) {
+      return next(error);
+    }
+  }
+  next();
+});
+
+const User = mongoose.model('User', userSchema);
+
+module.exports = User;

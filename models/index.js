@@ -1,0 +1,9 @@
+const Tables = {};
+Tables.User = require("./users");
+Tables.SellBusiness = require('./SellBusiness');
+Tables.Business = require('./business');
+Tables.SavedDeal = require('./SavedDeal');
+Tables.BusinessType = require('./businessType');
+Tables.Sector = require('./sector');
+Tables.UserPreferences = require('./userPreferences');
+module.exports = Tables;
