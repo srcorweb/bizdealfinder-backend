@@ -9,6 +9,10 @@
   },
   "author": "parvind06",
   "license": "ISC",
+  "engines": {
+    "node": "18.x",
+    "npm": "8.x"
+  },
   "dependencies": {
     "@sendgrid/mail": "^8.1.5",
     "apify-client": "^2.12.2",
