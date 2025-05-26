@@ -121,7 +121,7 @@ const checkMatches = async (newListings) => {
   }
 };
 
-cron.schedule('0 */3 * * *', async () => {
+cron.schedule('0 0 * * *', async () => {
   console.log('Running scraper and checking matches...');
   const newListings = await scrapeBusinesses();
   await checkMatches(newListings);
