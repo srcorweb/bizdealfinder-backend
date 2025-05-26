@@ -631,4 +631,4 @@ const scrapeBusinesses = async () => {
 };
 
 module.exports = { scrapeBusinesses };
-scrapeBusinesses();
+// scrapeBusinesses();
