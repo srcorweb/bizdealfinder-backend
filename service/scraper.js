@@ -119,6 +119,7 @@ const scrapeBusinesses = async () => {
     {
       browser = await puppeteer.launch({
         headless: 'new',
+        executablePath: '/app/.cache/puppeteer/chrome/linux-136.0.7103.92/chrome-linux64/chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -241,6 +242,7 @@ const scrapeBusinesses = async () => {
     {
       browser = await puppeteer.launch({
         headless: 'new',
+        executablePath: '/app/.cache/puppeteer/chrome/linux-136.0.7103.92/chrome-linux64/chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -422,8 +424,15 @@ const scrapeBusinesses = async () => {
     // 4) Flippa.com via Puppeteer
     {
       browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+        headless: 'new',
+        executablePath: '/app/.cache/puppeteer/chrome/linux-136.0.7103.92/chrome-linux64/chrome',
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-web-security',
+          '--disable-features=IsolateOrigins,site-per-process',
+        ],
         protocolTimeout: 120000
       });
 
