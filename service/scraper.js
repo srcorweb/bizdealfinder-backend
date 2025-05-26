@@ -119,7 +119,6 @@ const scrapeBusinesses = async () => {
     {
       browser = await puppeteer.launch({
         headless: 'new',
-        executablePath: '/app/.chromium-browser/chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -242,7 +241,6 @@ const scrapeBusinesses = async () => {
     {
       browser = await puppeteer.launch({
         headless: 'new',
-        executablePath: '/app/.chromium-browser/chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -425,7 +423,6 @@ const scrapeBusinesses = async () => {
     {
       browser = await puppeteer.launch({
         headless: 'new',
-        executablePath: '/app/.chromium-browser/chrome',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
