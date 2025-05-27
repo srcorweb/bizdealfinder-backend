@@ -37,7 +37,7 @@ router.post('/sign-up', signup, async (req, res) => {
     await UserController.signup(req, res);
 
     console.log('Sending verification email to:', email);
-    const verificationLink = `http://localhost:5173/auth/verify-email?token=${verificationToken}`;
+    const verificationLink = `${process.env.FRONTEND_URL}/auth/verify-email?token=${verificationToken}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
