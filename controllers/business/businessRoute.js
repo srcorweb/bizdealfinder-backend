@@ -19,8 +19,9 @@ require('dotenv').config();
 puppeteer.use(StealthPlugin());
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const suggestionCache = new NodeCache({ stdTTL: 86400 });
-const relevanceCache = new NodeCache({ stdTTL: 3600 });
+const relevanceCache = new NodeCache({ stdTTL: 3600 }); // Cache relevance scores for 1 hour
 
+// Nodemailer setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -29,6 +30,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// Retry logic for Open AI rate limit errors
 const retryWithBackoff = async (fn, retries = 3, delay = 1000) => {
   for (let i = 0; i < retries; i++) {
     try {
@@ -45,6 +47,7 @@ const retryWithBackoff = async (fn, retries = 3, delay = 1000) => {
   }
 };
 
+// Helper function to extract metrics from description text (for Flippa and Sunbelt)
 const extractMetricsFromDescription = async (description) => {
   const metrics = [];
   const regexPatterns = [
@@ -67,12 +70,16 @@ const extractMetricsFromDescription = async (description) => {
     }
   }
 
+  // AI fallback for complex cases
   if (metrics.length < 2) {
     try {
       const aiPrompt = `
         Extract financial and operational metrics from the following business description. Return a JSON array of objects with "key" and "value" fields for metrics like Year Established, Years in Operation, Employees, Revenue, Cash Flow, Monthly Rent, etc. Use numeric values where possible, and format monetary values with "$" and commas (e.g., "$1,000,000").
+
         Description: ${description.substring(0, 1000)}
-        Return JSON only: []
+
+        Return JSON only:
+        []
       `;
       const aiResponse = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
@@ -91,6 +98,7 @@ const extractMetricsFromDescription = async (description) => {
     }
   }
 
+  // Deduplicate metrics
   const uniqueMetrics = [];
   const seenKeys = new Set();
   for (const metric of metrics) {
@@ -103,11 +111,13 @@ const extractMetricsFromDescription = async (description) => {
   return uniqueMetrics;
 };
 
+// Generate suggestions using OpenAI and filter against businesses collection
 router.get('/suggest', authMiddleware, async (req, res) => {
   try {
     const { q } = req.query;
     const query = q ? q.toLowerCase().trim() : '';
 
+    // Predefined suggestions
     const predefinedSuggestions = [
       'sba preapproved',
       'distressed restaurants',
@@ -119,10 +129,12 @@ router.get('/suggest', authMiddleware, async (req, res) => {
       'zero down businesses'
     ];
 
+    // Return predefined suggestions if no query
     if (!query) {
       return res.status(200).json(predefinedSuggestions.slice(0, 5));
     }
 
+    // Check cache
     const cacheKey = `suggest:${query}`;
     const cachedSuggestions = suggestionCache.get(cacheKey);
     if (cachedSuggestions) {
@@ -130,6 +142,7 @@ router.get('/suggest', authMiddleware, async (req, res) => {
       return res.status(200).json(cachedSuggestions);
     }
 
+    // Generate suggestions with OpenAI
     const prompt = `
       Generate up to 10 search query completions for the partial query "${query}" relevant to a business listing database. Focus on business-related terms like sectors (e.g., Food, Retail, Services), locations (e.g., Texas, New York), and attributes (e.g., sba preapproved, distressed, under 500k). Avoid unrelated suggestions (e.g., tourism, weather). Return a JSON object with a "suggestions" key containing an array of strings.
       Example: For "rest", return { "suggestions": ["restaurants in texas", "restaurants under 500k", "restaurants sba preapproved", "restaurants distressed"] }
@@ -145,8 +158,16 @@ router.get('/suggest', authMiddleware, async (req, res) => {
       })
     );
 
-    let suggestions = JSON.parse(response.choices[0].message.content).suggestions || [];
+    // Parse and extract suggestions array
+    const responseData = JSON.parse(response.choices[0].message.content);
+    let suggestions = Array.isArray(responseData.suggestions) ? responseData.suggestions : [];
 
+    if (!Array.isArray(suggestions)) {
+      console.error('OpenAI response is not an array:', responseData);
+      suggestions = [];
+    }
+
+    // Fetch popular terms from businesses collection
     const popularTerms = await Business.aggregate([
       {
         $facet: {
@@ -162,6 +183,7 @@ router.get('/suggest', authMiddleware, async (req, res) => {
     const nameCounts = popularTerms[0].names.reduce((acc, { _id, count }) => ({ ...acc, [_id.toLowerCase()]: count }), {});
     const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
 
+    // Filter and rank suggestions
     suggestions = suggestions
       .filter(suggestion => {
         const words = suggestion.toLowerCase().split(' ');
@@ -183,6 +205,7 @@ router.get('/suggest', authMiddleware, async (req, res) => {
       .slice(0, 5)
       .map(({ text }) => text);
 
+    // Cache suggestions
     suggestionCache.set(cacheKey, suggestions);
     console.log('Generated suggestions:', suggestions);
 
@@ -193,6 +216,7 @@ router.get('/suggest', authMiddleware, async (req, res) => {
   }
 });
 
+// Keyword-based search
 router.get('/search', authMiddleware, async (req, res) => {
   try {
     const query = req.query.q || "coffee shop in New York under 500k";
@@ -204,55 +228,94 @@ router.get('/search', authMiddleware, async (req, res) => {
   }
 });
 
+// AI-powered relevance search
 router.get('/ai-search', authMiddleware, async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) return res.status(400).json({ message: 'Query required' });
 
-    const query = q.trim();
-    console.log('Processing natural language query:', query);
+    const query = q.toLowerCase().trim();
+    let mongoQuery = {};
 
-    // Generate MongoDB query using OpenAI
-    const prompt = `
-      Translate the following natural language query into a MongoDB query for a business listings database. The database has fields: name (string), sector (string, e.g., "Food", "Retail"), price (number), revenue (number), cashFlow (number), location (object with city and state strings), description (string), distressed (boolean), ownerAbsentee (boolean), sbaPreApproved (boolean), sellerFinancing (boolean), zeroDown (boolean), brickAndMortar (boolean). Return a JSON object with a single key "query" containing the MongoDB query object. Use $regex for partial string matches (case-insensitive), $gt/$lte for numeric comparisons, and ensure logical operators ($and, $or) are used correctly. Handle terms like "under/over" for price/revenue, locations (e.g., "Texas"), and attributes (e.g., "sba preapproved"). If the query is ambiguous, prioritize name, sector, or location matches.
+    const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
+    const hasBoolean = booleanTerms.some(term => query.includes(term));
+    const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
+    const location = locationMatch ? locationMatch[1].trim() : '';
 
-      Query: "${query}"
+    if (hasBoolean && location) {
+      const booleanConditions = [];
+      if (query.includes('distressed')) booleanConditions.push({ distressed: true });
+      if (query.includes('owner absentee') || query.includes('absentee')) booleanConditions.push({ ownerAbsentee: true });
+      if (query.includes('sba') || query.includes('approved')) booleanConditions.push({ sbaPreApproved: true });
+      if (query.includes('brick and mortar')) booleanConditions.push({ brickAndMortar: true });
+      if (query.includes('seller financing')) booleanConditions.push({ sellerFinancing: true });
+      if (query.includes('zero down')) bool
+System: eanConditions.push({ zeroDown: true });
 
-      Examples:
-      Query: "businesses in Texas with revenue over $1 million"
-      Output: { "query": { "$and": [{ "location.state": { "$regex": "^Texas$", "$options": "i" } }, { "revenue": { "$gt": 1000000 } }] } }
-      Query: "coffee shops under 500k"
-      Output: { "query": { "$and": [{ "sector": "Food" }, { "price": { "$lte": 500000 } }, { "name": { "$regex": "coffee", "$options": "i" } }] } }
-      Query: "sba preapproved restaurants"
-      Output: { "query": { "$and": [{ "sbaPreApproved": true }, { "sector": "Food" }] } }
+      mongoQuery = {
+        $and: [
+          { $or: booleanConditions },
+          {
+            $or: [
+              { 'location.state': { $regex: `^${location}$`, $options: 'i' } },
+              { 'location.city': { $regex: location, $options: 'i' } }
+            ]
+          }
+        ]
+      };
+    } else if (query === 'distressed') {
+      mongoQuery.distressed = true;
+    } else if (query === 'owner absentee' || query === 'absentee') {
+      mongoQuery.ownerAbsentee = true;
+    } else if (query === 'brick and mortar') {
+      mongoQuery.brickAndMortar = true;
+    } else if (query === 'seller financing') {
+      mongoQuery.sellerFinancing = true;
+    } else if (query === 'zero down') {
+      mongoQuery.zeroDown = true;
+    } else if (query.includes('restaurants') || query.includes('restaurant')) {
+      mongoQuery.sector = 'Food';
+    } else {
+      const queryWords = query.split(' ').filter(w => w.length > 2);
+      mongoQuery = {
+        $or: [
+          { name: { $regex: queryWords.join('|'), $options: 'i' } },
+          { sector: { $regex: queryWords.join('|'), $options: 'i' } },
+          { 'location.city': { $regex: queryWords.join('|'), $options: 'i' } },
+          { 'location.state': { $regex: queryWords.join('|'), $options: 'i' } }
+        ]
+      };
 
-      Return JSON only: { "query": {} }
-    `;
-    const queryResponse = await retryWithBackoff(() =>
-      openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'You are an expert in translating natural language to MongoDB queries.' },
-          { role: 'user', content: prompt }
-        ],
-        response_format: { type: 'json_object' }
-      })
-    );
+      if (queryWords.includes('distressed')) mongoQuery.distressed = true;
+      if (queryWords.includes('sba') || query.includes('approved')) mongoQuery.sbaPreApproved = true;
+      if (queryWords.includes('absentee') || queryWords.includes('owner')) mongoQuery.ownerAbsentee = true;
+      if (queryWords.includes('brick') && queryWords.includes('mortar')) mongoQuery.brickAndMortar = true;
+      if (queryWords.includes('seller') && queryWords.includes('financing')) mongoQuery.sellerFinancing = true;
+      if (queryWords.includes('zero') && queryWords.includes('down')) mongoQuery.zeroDown = true;
+      if (query.includes('under')) {
+        const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
+        if (priceMatch) {
+          const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+          mongoQuery.price = { $lte: price };
+        }
+      }
+    }
 
-    const mongoQuery = JSON.parse(queryResponse.choices[0].message.content).query;
-    console.log('Generated MongoDB query:', JSON.stringify(mongoQuery));
-
-    // Execute the query
     const businesses = await Business.find(mongoQuery).limit(100).lean();
     console.log('Fetched listings:', businesses.length);
 
-    // Apply relevance scoring
+    if (['distressed', 'owner absentee', 'absentee', 'brick and mortar', 'seller financing', 'zero down'].includes(query)) {
+      console.log('Fetched boolean listings:', businesses.length);
+      return res.status(200).json(businesses);
+    }
+
     const results = [];
-    const batchSize = 5;
+    const batchSize = 5; // Reduced batch size to mitigate rate limits
     for (let i = 0; i < businesses.length; i += batchSize) {
       const batch = businesses.slice(i, i + batchSize);
       const batchPromises = batch.map(async (business) => {
         try {
+          // Check relevance cache
           const cacheKey = `relevance:${query}:${business.businessId}`;
           const cachedResult = relevanceCache.get(cacheKey);
           if (cachedResult) {
@@ -260,6 +323,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             return cachedResult;
           }
 
+          // Truncate and select relevant business fields
           const truncatedBusiness = {
             businessId: business.businessId,
             name: business.name,
@@ -268,12 +332,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             revenue: business.revenue,
             cashFlow: business.cashFlow,
             location: business.location,
-            description: business.description?.substring(0, 1000),
+            description: business.description?.substring(0, 1000), // Limit to 1000 chars
             scrapedData: { detailUrl: business.scrapedData?.detailUrl },
             sourceContent: {
               financials: business.sourceContent?.financials,
               detailedInfo: business.sourceContent?.detailedInfo,
-              content: business.sourceContent?.content?.substring(0, 1000)
+              content: business.sourceContent?.content?.substring(0, 1000) // Limit to 1000 chars
             },
             distressed: business.distressed,
             ownerAbsentee: business.ownerAbsentee,
@@ -283,7 +347,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             brickAndMortar: business.brickAndMortar
           };
 
-          const messageContent = `Query: ${query}\nListing: ${JSON.stringify(truncatedBusiness)}`;
+          // Estimate token count (rough: 1 token ~ 4 chars)
+          const messageContent = `Query: ${q}\nListing: ${JSON.stringify(truncatedBusiness)}`;
           const approxTokens = messageContent.length / 4;
           if (approxTokens > 120000) {
             console.warn(`Skipping ${business.businessId}: estimated ${approxTokens} tokens exceeds limit`);
@@ -296,19 +361,47 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
               messages: [
                 {
                   role: 'system',
-                  content: `Evaluate business listings for relevance to a user query. Return:
+                  content: `Evaluate business listings for relevance to a user query. Given a query and JSON data, return:
                   - businessId: string
                   - relevance: number (0-100)
                   - reason: string
-                  Map terms: "restaurants" → sector: "Food", "shops" → sector: "Retail" or "Services", "distressed" → distressed: true, etc. Prioritize exact matches for boolean fields and location. Penalize non-matching locations (-40). Score >50 for clear matches, <30 for poor matches. Return JSON only.`
+
+                  Map user terms to fields:
+                  - "restaurants", "cafes", "bars" → sector: "Food"
+                  - "shops", "stores" → sector: "Retail" or "Services"
+                  - "car shops", "auto shops", "car wash", "garage" → sector: "Retail" or "Services", prioritize auto-related businesses
+                  - "car" → match name or sector, prioritize auto-related
+                  - "distressed" → distressed: true
+                  - "sba", "approved" → sbaPreApproved: true
+                  - "absentee", "owner" → ownerAbsentee: true
+                  - "brick and mortar" → brickAndMortar: true
+                  - "seller financing" → sellerFinancing: true
+                  - "zero down" → zeroDown: true
+                  - Location terms (e.g., "Georgia") → location.city or location.state
+                  - Price terms (e.g., "under 500k") → price <= 500000
+
+                  Understand the query's intent like a human. Prioritize exact matches for boolean fields (e.g., zeroDown: true) and location (e.g., location.state: "Georgia"). For queries with location (e.g., "in Georgia"), heavily penalize listings not matching the location (subtract 40 from relevance). Score above 50 for clear matches, below 30 for poor matches, considering name, sector, description, price, location. Return JSON only.
+
+                  Examples:
+                  Query: "zero down in Georgia"
+                  Listing: { "name": "Retail Store", "sector": "Retail", "zeroDown": true, "location": { "state": "Georgia" } }
+                  Output: { "businessId": "...", "relevance": 95, "reason": "Matches zeroDown and Georgia location." }
+                  Listing: { "name": "Store", "sector": "Retail", "zeroDown": true, "location": { "state": "Florida" } }
+                  Output: { "businessId": "...", "relevance": 55, "reason": "Matches zeroDown but not in Georgia." }
+                  Query: "restaurants in Florida"
+                  Listing: { "name": "Pizza Place", "sector": "Food", "location": { "state": "Florida" } }
+                  Output: { "businessId": "...", "relevance": 90, "reason": "Matches Food sector and Florida location." }`
                 },
-                { role: 'user', content: messageContent }
+                {
+                  role: 'user',
+                  content: messageContent
+                }
               ],
               response_format: { type: 'json_object' }
             })
           );
           const result = JSON.parse(response.choices[0].message.content);
-          relevanceCache.set(cacheKey, result);
+          relevanceCache.set(cacheKey, result); // Cache the result
           return result;
         } catch (error) {
           console.error('Open AI error for', business.businessId, error.message);
@@ -317,14 +410,17 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       });
       const batchResults = await Promise.all(batchPromises);
       results.push(...batchResults);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Increased delay to 2000ms
     }
 
     const relevantResults = results
       .filter(result => result.relevance > 50)
       .map(result => {
         const business = businesses.find(b => b.businessId === result.businessId);
-        return business ? { ...business, relevance: result.relevance } : null;
+        if (business) {
+          return { ...business, relevance: result.relevance };
+        }
+        return null;
       })
       .filter(b => b);
 
@@ -336,6 +432,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
   }
 });
 
+// Save a deal
 router.post('/saved', authMiddleware, async (req, res) => {
   try {
     const { businessId } = req.body;
@@ -360,6 +457,7 @@ router.post('/saved', authMiddleware, async (req, res) => {
   }
 });
 
+// Get saved deals
 router.get('/saved', authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -376,6 +474,7 @@ router.get('/saved', authMiddleware, async (req, res) => {
   }
 });
 
+// Unsave a deal
 router.delete('/saved/:businessId', authMiddleware, async (req, res) => {
   try {
     const { businessId } = req.params;
@@ -393,6 +492,7 @@ router.delete('/saved/:businessId', authMiddleware, async (req, res) => {
   }
 });
 
+// Save or update user preferences
 router.post('/preferences', authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -422,6 +522,7 @@ router.post('/preferences', authMiddleware, async (req, res) => {
   }
 });
 
+// Get user preferences
 router.get('/preferences', authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -437,6 +538,7 @@ router.get('/preferences', authMiddleware, async (req, res) => {
   }
 });
 
+// Get "For You" matched deals
 router.get('/for-you', authMiddleware, async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -452,6 +554,7 @@ router.get('/for-you', authMiddleware, async (req, res) => {
   }
 });
 
+// Check matches for new listings
 router.post('/check-matches', async (req, res) => {
   try {
     const newListings = req.body.listings || [];
@@ -500,6 +603,7 @@ router.post('/check-matches', async (req, res) => {
   }
 });
 
+// Generate SWOT analysis and benchmarks
 router.post('/swot-analysis', authMiddleware, async (req, res) => {
   try {
     const { businessId } = req.body;
@@ -508,11 +612,13 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
     const business = await Business.findOne({ businessId }).lean();
     if (!business) return res.status(404).json({ message: 'Business not found' });
 
+    // Check if cached analysis exists
     if (business.swotAnalysis?.strengths && business.benchmarks?.dealSummary && business.riskAnalysis?.score && business.marketTrendsData?.length >= 10) {
       let aiGeneratedDescription = business.aiGeneratedDescription;
       if (!aiGeneratedDescription) {
         const descPrompt = `
           Generate a concise 1-2 sentence description of the following business listing based on all available data, including name, sector, price, revenue, cash flow, location, description, and scraped data. Ensure the description is professional, engaging, and highlights key aspects of the business.
+
           Listing Data:
           - Title: ${business.name}
           - Sector: ${business.sector}
@@ -524,6 +630,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
           - Keywords: ${business.distressed ? 'distressed, ' : ''}${business.sellerFinancing ? 'seller financing, ' : ''}${business.sbaPreApproved ? 'SBA approved, ' : ''}${business.ownerAbsentee ? 'owner absentee, ' : ''}${business.zeroDown ? 'zero down, ' : ''}${business.brickAndMortar ? 'brick and mortar' : 'online'}
           - Source URL: ${business.scrapedData.detailUrl}
           - Source Data: ${JSON.stringify(business.sourceContent || {})}
+
           Return a JSON object with a single key "description" containing the 1-2 sentence description.
         `;
         const descResponse = await openai.chat.completions.create({
@@ -564,6 +671,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       });
     }
 
+    // Fetch competitors
     const competitors = await Business.find({
       sector: business.sector,
       price: { $gte: business.price * 0.5, $lte: business.price * 1.5 },
@@ -575,12 +683,14 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
     let detailedInfo = business.sourceContent?.detailedInfo || [];
     let useFallback = false;
 
+    // Scrape source page if no cached content or cache is older than 7 days
     if (!sourceContent || !business.sourceContent?.scrapedAt || (new Date() - new Date(business.sourceContent.scrapedAt)) > 7 * 24 * 60 * 60 * 1000) {
       let attempt = 0;
       const maxRetries = 3;
       while (attempt < maxRetries) {
         try {
           if (business.scrapedData?.source === 'BizBuySell') {
+            // Use Axios + Cheerio for BizBuySell
             const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
             const response = await axios.get(business.scrapedData.detailUrl, {
               timeout: 30000,
@@ -594,6 +704,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
             sourceContent = response.data;
             const $ = cheerio.load(sourceContent);
 
+            // Extract financial data
             financials = [];
             $('.financials p').each((_, el) => {
               const key = $(el).find('.title').text().trim();
@@ -604,6 +715,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
 
+            // Extract detailed information
             detailedInfo = [];
             $('#ctl00_ctl00_Content_ContentPlaceHolder1_wideProfile_listingDetails_dlDetailedInformation dt').each((i, dt) => {
               const key = $(dt).find('.normal').text().trim();
@@ -616,6 +728,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
           } else if (business.scrapedData?.source === 'Sunbelt Network') {
+            // Use Axios + Cheerio for Sunbelt Network
             const httpsAgent = new https.Agent({ rejectUnauthorized: false, maxVersion: 'TLSv1.2' });
             const response = await axios.get(business.scrapedData.detailUrl, {
               timeout: 30000,
@@ -631,6 +744,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
             sourceContent = response.data;
             const $ = cheerio.load(sourceContent);
 
+            // Extract financials
             financials = [];
             $('.resultsBusiness__detailsFinancial--item ul.valuesItems li').each((_, el) => {
               const key = $(el).find('.resultsBusiness__detailsFinancial--itemSpan').text().trim();
@@ -644,6 +758,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
 
+            // Extract detailed information
             detailedInfo = [];
             $('.resultsBusiness__detailsInformation ul li').each((_, el) => {
               const key = $(el).find('strong').text().trim().replace(':', '');
@@ -656,6 +771,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
 
+            // Extract from description
             const description = $('div.w-full.lg\\:pr-2.lg\\:w-7\\/12 > p').text().trim();
             const descMetrics = await extractMetricsFromDescription(description);
             for (const metric of descMetrics) {
@@ -666,6 +782,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             }
           } else if (business.scrapedData?.source === 'Flippa') {
+            // Use Axios + Cheerio for Flippa
             const httpsAgent = new https.Agent({ rejectUnauthorized: false, maxVersion: 'TLSv1.2' });
             const response = await axios.get(business.scrapedData.detailUrl, {
               timeout: 30000,
@@ -681,6 +798,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
             sourceContent = response.data;
             const $ = cheerio.load(sourceContent);
 
+            // Extract financials from #properties-summary
             financials = [];
             $('#properties-summary .tw-mr-8.tw-mb-5').each((_, el) => {
               const key = $(el).find('.tw-text-sm.tw-text-gray-500').text().trim();
@@ -694,6 +812,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
 
+            // Extract detailed information from #properties-summary
             detailedInfo = [];
             $('#properties-summary .tw-mr-8.tw-mb-5').each((_, el) => {
               const key = $(el).find('.tw-text-sm.tw-text-gray-500').text().trim();
@@ -706,6 +825,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             });
 
+            // Extract from description
             const description = $('div[data-toggle-class-target="element"]').text().trim();
             const descMetrics = await extractMetricsFromDescription(description);
             for (const metric of descMetrics) {
@@ -716,6 +836,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
               }
             }
           } else {
+            // Puppeteer for other sources
             const browser = await puppeteer.launch({
               headless: true,
               args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
@@ -737,6 +858,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
             detailedInfo = descMetrics.filter(m => !['Revenue', 'Cash Flow', 'Monthly Rent'].includes(m.key));
           }
 
+          // Cache the scraped content
           await Business.updateOne(
             { businessId },
             {
@@ -765,6 +887,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       }
     }
 
+    // Use existing data if scrape failed
     if (useFallback) {
       console.log(`Using existing data for analysis of ${businessId}`);
       financials = business.sourceContent?.financials || [
@@ -776,8 +899,10 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       sourceContent = business.sourceContent?.content || business.description || '';
     }
 
+    // Generate AI content
     const prompt = `
       Analyze the following business listing and its source page content to provide a comprehensive SWOT Analysis, industry benchmarks, and additional insights. Use the provided listing data and source page data if available. If source page data is limited, rely on the listing data and estimate missing metrics based on industry standards for the sector.
+
       Listing Data:
       - Title: ${business.name}
       - Description: ${business.description}
@@ -788,11 +913,14 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       - Location: ${business.location.city}, ${business.location.state}
       - Keywords: ${business.distressed ? 'distressed, ' : ''}${business.sellerFinancing ? 'seller financing, ' : ''}${business.sbaPreApproved ? 'SBA approved, ' : ''}${business.ownerAbsentee ? 'owner absentee, ' : ''}${business.zeroDown ? 'zero down, ' : ''}${business.brickAndMortar ? 'brick and mortar' : 'online'}
       - Source URL: ${business.scrapedData.detailUrl}
+
       Source Page Content:
       ${sourceContent.substring(0, 10000)}...
+
       Additional Source Data:
       Financials: ${JSON.stringify(financials)}
       Detailed Info: ${JSON.stringify(detailedInfo)}
+
       Provide:
       1. SWOT Analysis (1–2 sentences each, incorporating source page details or listing data):
         - Strengths: Key advantages or positive attributes.
@@ -814,13 +942,14 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       6. Valuation Estimate:
         - Range: Estimated valuation range (e.g., "$300k–$400k").
         - Confidence: Confidence score (0–100).
+
       Return JSON only:
       {
         "swotAnalysis": {
           "strengths": "...",
           "weaknesses": "...",
           "opportunities": "...",
-          "threats": "..."
+          "threats": "...  }
         },
         "benchmarks": {
           "ebitdaMargin": "...",
@@ -853,8 +982,10 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
 
     const analysis = JSON.parse(response.choices[0].message.content);
 
+    // Generate AI description
     const descPrompt = `
       Generate a concise 1-2 sentence description of the following business listing based on all available data, including name, sector, price, revenue, cash flow, location, description, and scraped data. Ensure the description is professional, engaging, and highlights key aspects of the business.
+
       Listing Data:
       - Title: ${business.name}
       - Sector: ${business.sector}
@@ -866,6 +997,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       - Keywords: ${business.distressed ? 'distressed, ' : ''}${business.sellerFinancing ? 'seller financing, ' : ''}${business.sbaPreApproved ? 'SBA approved, ' : ''}${business.ownerAbsentee ? 'owner absentee, ' : ''}${business.zeroDown ? 'zero down, ' : ''}${business.brickAndMortar ? 'brick and mortar' : 'online'}
       - Source URL: ${business.scrapedData.detailUrl}
       - Source Data: ${JSON.stringify(business.sourceContent || {})}
+
       Return a JSON object with a single key "description" containing the 1-2 sentence description.
     `;
     const descResponse = await openai.chat.completions.create({
@@ -878,6 +1010,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
     });
     const aiGeneratedDescription = JSON.parse(descResponse.choices[0].message.content).description;
 
+    // Cache the analysis and description
     await Business.updateOne(
       { businessId },
       {
@@ -936,6 +1069,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
   }
 });
 
+// Contact form submission
 router.post('/contact', authMiddleware, async (req, res) => {
   try {
     const { name, email, message } = req.body;
