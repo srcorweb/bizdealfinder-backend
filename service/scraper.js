@@ -113,465 +113,505 @@ const scrapeBusinesses = async () => {
 
     const allListings = [];
     const maxPages = 50;
-    const maxRetries = 2;
+    const maxRetries = 1;
 
-    // 1) BusinessForSale.com via Puppeteer
-    {
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-        ],
-        protocolTimeout: 120000
-      });
-
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        const bfsUrl = pageNum === 1 ? 'https://us.businessesforsale.com/us/search/businesses-for-sale' : `https://us.businessesforsale.com/us/search/businesses-for-sale-${pageNum}`;
-        console.log(`Scraping BusinessForSale page ${pageNum}: ${bfsUrl}`);
-        let attempt = 0;
-        let success = false;
-
-        while (attempt < maxRetries && !success) {
-          const page = await browser.newPage();
-          const userAgents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
-          ];
-          const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-          await page.setUserAgent(userAgent);
-          await page.setViewport({ width: 1280, height: 800 });
-
-          await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            window.chrome = { runtime: {} };
+    // Array of site scraping functions to process sequentially
+    const siteScrapers = [
+      {
+        name: 'BusinessForSale',
+        scrape: async () => {
+          browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-blink-features=AutomationControlled',
+              '--disable-web-security',
+              '--disable-features=IsolateOrigins,site-per-process',
+            ],
+            protocolTimeout: 120000
           });
 
-          const proxy = await getFreeProxy();
-          if (proxy) {
-            console.log(`Using proxy for attempt ${attempt + 1}: ${proxy}`);
-            await page.setExtraHTTPHeaders({ 'Proxy-Server': proxy });
-          } else {
-            console.log(`No proxy available for attempt ${attempt + 1}`);
-          }
-
           try {
-            await page.goto(bfsUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-            await page.evaluate(() => {
-              window.scrollTo(0, Math.random() * 1000);
-              const x = Math.random() * 500;
-              const y = Math.random() * 500;
-              document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
-            });
-            await sleep(2000 + Math.random() * 3000);
+            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+              const bfsUrl = pageNum === 1 ? 'https://us.businessesforsale.com/us/search/businesses-for-sale' : `https://us.businessesforsale.com/us/search/businesses-for-sale-${pageNum}`;
+              console.log(`Scraping BusinessForSale page ${pageNum}: ${bfsUrl}`);
+              let attempt = 0;
+              let success = false;
 
-            const isVerificationPresent = await page.evaluate(() => {
-              return document.querySelector('title')?.innerText.includes('Just a moment...') ||
-                     document.querySelector('#cf-challenge, .cf-please-wait, [id*="captcha"], [class*="captcha"]');
-            });
-            if (isVerificationPresent) {
-              console.log(`Verification screen detected on BusinessForSale page ${pageNum}, attempt ${attempt + 1}`);
-              await page.screenshot({ path: `bfs-verification-page${pageNum}-attempt${attempt + 1}.png` });
-              throw new Error('Verification screen detected');
-            }
+              while (attempt < maxRetries && !success) {
+                const page = await browser.newPage();
+                const userAgents = [
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
+                ];
+                const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+                await page.setUserAgent(userAgent);
+                await page.setViewport({ width: 1280, height: 800 });
 
-            await page.waitForSelector('.result', { timeout: 60000 });
-            success = true;
-
-            const bfsSnippets = await page.evaluate(() => {
-              const snippets = [];
-              document.querySelectorAll('.result').forEach(el => {
-                const detailUrl = el.querySelector('a')?.href || '';
-                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://us.businessesforsale.com${detailUrl}`;
-                snippets.push({ html: el.innerHTML, detailUrl: fullUrl });
-              });
-              return snippets;
-            });
-            console.log(`Found ${bfsSnippets.length} BusinessForSale listings on page ${pageNum}`);
-
-            for (const { html, detailUrl } of bfsSnippets) {
-              try {
-                const aiResp = await openai.chat.completions.create({
-                  model: 'gpt-4o-mini',
-                  messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: html }
-                  ],
-                  response_format: { type: 'json_object' }
+                await page.evaluateOnNewDocument(() => {
+                  Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                  window.chrome = { runtime: {} };
                 });
-                const listing = JSON.parse(aiResp.choices[0].message.content);
-                listing.scrapedData.source = 'BusinessForSale';
-                listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-                listing.businessId = detailUrl || listing.businessId;
-                console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-                allListings.push(listing);
-              } catch (err) {
-                console.error(`BusinessForSale parse error on page ${pageNum}:`, err.message);
-              }
-            }
-          } catch (err) {
-            console.error(`BusinessForSale load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
-            const content = await page.content();
-            console.log(`Page content snippet: ${content.substring(0, 500)}...`);
-            await page.screenshot({ path: `bfs-error-page${pageNum}-attempt${attempt + 1}.png` });
-            if (attempt < maxRetries - 1) {
-              console.log(`Retrying BusinessForSale page ${pageNum} with delay...`);
-              await sleep(5000 * Math.pow(2, attempt));
-            } else {
-              console.log(`Max retries reached for BusinessForSale page ${pageNum}. Skipping...`);
-            }
-            attempt++;
-          } finally {
-            await page.close();
-          }
-        }
-        await sleep(10000);
-      }
 
-      await browser.close();
-      browser = null;
-    }
-
-    // 2) DealStream.com via Puppeteer
-    {
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-        ],
-        protocolTimeout: 120000
-      });
-
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        const dsUrl = pageNum === 1 ? 'https://dealstream.com/search?location=United+States' : `https://dealstream.com/search?page=${pageNum}`;
-        console.log(`Scraping DealStream page ${pageNum}: ${dsUrl}`);
-        let attempt = 0;
-        let success = false;
-
-        while (attempt < maxRetries && !success) {
-          const page = await browser.newPage();
-          const userAgents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
-          ];
-          const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-          await page.setUserAgent(userAgent);
-          await page.setViewport({ width: 1280, height: 800 });
-
-          await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            window.chrome = { runtime: {} };
-          });
-
-          const proxy = await getFreeProxy();
-          if (proxy) {
-            console.log(`Using proxy for attempt ${attempt + 1}: ${proxy}`);
-            await page.setExtraHTTPHeaders({ 'Proxy-Server': proxy });
-          } else {
-            console.log(`No proxy available for attempt ${attempt + 1}`);
-          }
-
-          try {
-            await page.goto(dsUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-            await page.evaluate(() => {
-              window.scrollTo(0, Math.random() * 1000);
-              const x = Math.random() * 500;
-              const y = Math.random() * 500;
-              document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
-            });
-            await sleep(2000 + Math.random() * 3000);
-
-            const isVerificationPresent = await page.evaluate(() => {
-              return document.querySelector('title')?.innerText.includes('Just a moment...') ||
-                     document.querySelector('#cf-challenge, .cf-please-wait, [id*="captcha"], [class*="captcha"]');
-            });
-            if (isVerificationPresent) {
-              console.log(`Verification screen detected on DealStream page ${pageNum}, attempt ${attempt + 1}`);
-              await page.screenshot({ path: `dealstream-verification-page${pageNum}-attempt${attempt + 1}.png` });
-              throw new Error('Verification screen detected');
-            }
-
-            await page.waitForSelector('a.list-group-item.post', { timeout: 60000 });
-            success = true;
-
-            const dsSnippets = await page.evaluate(() => {
-              const snippets = [];
-              const usStates = ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming", "United States"];
-              document.querySelectorAll('a.list-group-item.post').forEach(el => {
-                const location = el.querySelector('div.h4')?.innerText.trim() || '';
-                if (usStates.some(state => location.includes(state))) {
-                  const detailUrl = el.getAttribute('href') || '';
-                  const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://dealstream.com${detailUrl}`;
-                  snippets.push({ html: el.innerHTML, detailUrl: fullUrl });
-                }
-              });
-              return snippets;
-            });
-            console.log(`Found ${dsSnippets.length} DealStream listings on page ${pageNum}`);
-
-            for (const { html, detailUrl } of dsSnippets) {
-              try {
-                const aiResp = await openai.chat.completions.create({
-                  model: 'gpt-4o-mini',
-                  messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: html }
-                  ],
-                  response_format: { type: 'json_object' }
-                });
-                const listing = JSON.parse(aiResp.choices[0].message.content);
-                listing.scrapedData.source = 'DealStream';
-                listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-                listing.businessId = detailUrl || listing.businessId;
-                console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-                allListings.push(listing);
-              } catch (err) {
-                console.error(`DealStream parse error on page ${pageNum}:`, err.message);
-              }
-            }
-          } catch (err) {
-            console.error(`DealStream load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
-            const content = await page.content();
-            console.log(`Page content snippet: ${content.substring(0, 500)}...`);
-            await page.screenshot({ path: `dealstream-error-page${pageNum}-attempt${attempt + 1}.png` });
-            if (attempt < maxRetries - 1) {
-              console.log(`Retrying DealStream page ${pageNum} with delay...`);
-              await sleep(5000 * Math.pow(2, attempt));
-            } else {
-              console.log(`Max retries reached for DealStream page ${pageNum}. Skipping...`);
-            }
-            attempt++;
-          } finally {
-            await page.close();
-          }
-        }
-        await sleep(10000);
-      }
-
-      await browser.close();
-      browser = null;
-    }
-
-    // 3) BizBuySell.com via Axios + Cheerio forcing HTTP/1.1
-    {
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/`;
-        console.log(`Fetching BizBuySell page ${pageNum}: ${url}`);
-        try {
-          const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
-          const safariAgents = [
-            'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
-          ];
-          const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
-          const start = Date.now();
-          const response = await axios.get(url, {
-            httpsAgent,
-            timeout: 30000,
-            headers: { 'User-Agent': userAgent }
-          });
-          const elapsed = ((Date.now() - start) / 1000).toFixed(4);
-          console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
-
-          const $ = cheerio.load(response.data);
-          const snippets = [];
-          $('app-listing-diamond').each((_, el) => {
-            const detailUrl = $(el).find('a').attr('href') || '';
-            const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
-            snippets.push({ html: $.html(el), detailUrl: fullUrl });
-          });
-          console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
-
-          for (const { html, detailUrl } of snippets) {
-            try {
-              const aiResp = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: html }
-                ],
-                response_format: { type: 'json_object' }
-              });
-              const listing = JSON.parse(aiResp.choices[0].message.content);
-              listing.scrapedData.source = 'BizBuySell';
-              listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-              listing.businessId = detailUrl || listing.businessId;
-              console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-              allListings.push(listing);
-            } catch (err) {
-              console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
-            }
-          }
-        } catch (err) {
-          console.error(`Error fetching BizBuySell page ${pageNum}:`, err.message);
-        }
-        await sleep(5000);
-      }
-    }
-
-    // 4) Flippa.com via Puppeteer
-    {
-      browser = await puppeteer.launch({
-        headless: 'new',
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-        ],
-        protocolTimeout: 120000
-      });
-
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        let attempt = 0;
-        let success = false;
-        const flippaUrl = pageNum === 1 ? 'https://flippa.com/online-businesses-united-states' : `https://flippa.com/online-businesses-united-states?page%5Bnumber%5D=${pageNum}`;
-        console.log(`Scraping Flippa page ${pageNum}: ${flippaUrl}`);
-
-        while (attempt < maxRetries && !success) {
-          const page = await browser.newPage();
-          await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-          await page.setViewport({ width: 1280, height: 800 });
-
-          try {
-            await page.goto(flippaUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
-            await page.waitForSelector('div[id^="listing-"]', { timeout: 90000 });
-            success = true;
-
-            const flipSnippets = await page.evaluate(() => {
-              const snippets = [];
-              document.querySelectorAll('div[id^="listing-"]').forEach(el => {
-                const detailUrl = el.querySelector('a')?.href || '';
-                snippets.push({ html: el.outerHTML, detailUrl });
-              });
-              return snippets;
-            });
-            console.log(`Found ${flipSnippets.length} Flippa listings on page ${pageNum}`);
-
-            for (const { html, detailUrl } of flipSnippets) {
-              try {
-                // Scrape detail page and extract specific elements
-                const detailPage = await browser.newPage();
-                await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-                await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-
-                const detailHtml = await detailPage.content();
-                const $ = cheerio.load(detailHtml);
-
-                // Extract relevant sections
-                const propertiesSummary = $('#properties-summary').html() || '';
-                const description = $('.listing-description').text().trim().slice(0, 500) || 'No description available';
-                const detailExtract = `
-                  <div id="properties-summary">${propertiesSummary}</div>
-                  <div class="listing-description">${description}</div>
-                `;
-
-                // Combine and truncate
-                let combinedHtml = `${html}\n<!-- Detail Page Extract -->\n${detailExtract}`;
-                if (combinedHtml.length > 50000) {
-                  combinedHtml = combinedHtml.slice(0, 50000) + '...';
+                const proxy = await getFreeProxy();
+                if (proxy) {
+                  console.log(`Using proxy for attempt ${attempt + 1}: ${proxy}`);
+                  await page.setExtraHTTPHeaders({ 'Proxy-Server': proxy });
+                } else {
+                  console.log(`No proxy available for attempt ${attempt + 1}`);
                 }
 
-                const aiResp = await openai.chat.completions.create({
-                  model: 'gpt-4o-mini',
-                  messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: combinedHtml }
-                  ],
-                  response_format: { type: 'json_object' }
-                });
-                const listing = JSON.parse(aiResp.choices[0].message.content);
-                listing.scrapedData.source = 'Flippa';
-                listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-                listing.businessId = detailUrl || listing.businessId;
-                console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-                allListings.push(listing);
-                await detailPage.close();
-              } catch (err) {
-                console.error(`Flippa parse error for ${detailUrl} on page ${pageNum}:`, err.message);
+                try {
+                  await page.goto(bfsUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+                  await page.evaluate(() => {
+                    window.scrollTo(0, Math.random() * 1000);
+                    const x = Math.random() * 500;
+                    const y = Math.random() * 500;
+                    document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
+                  });
+                  await sleep(2000 + Math.random() * 3000);
+
+                  const isVerificationPresent = await page.evaluate(() => {
+                    return document.querySelector('title')?.innerText.includes('Just a moment...') ||
+                           document.querySelector('#cf-challenge, .cf-please-wait, [id*="captcha"], [class*="captcha"]');
+                  });
+                  if (isVerificationPresent) {
+                    console.log(`Verification screen detected on BusinessForSale page ${pageNum}, attempt ${attempt + 1}`);
+                    await page.screenshot({ path: `bfs-verification-page${pageNum}-attempt${attempt + 1}.png` });
+                    throw new Error('Verification screen detected');
+                  }
+
+                  await page.waitForSelector('.result', { timeout: 60000 });
+                  success = true;
+
+                  const bfsSnippets = await page.evaluate(() => {
+                    const snippets = [];
+                    document.querySelectorAll('.result').forEach(el => {
+                      const detailUrl = el.querySelector('a')?.href || '';
+                      const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://us.businessesforsale.com${detailUrl}`;
+                      snippets.push({ html: el.innerHTML, detailUrl: fullUrl });
+                    });
+                    return snippets;
+                  });
+                  console.log(`Found ${bfsSnippets.length} BusinessForSale listings on page ${pageNum}`);
+
+                  for (const { html, detailUrl } of bfsSnippets) {
+                    try {
+                      const aiResp = await openai.chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                          { role: 'system', content: systemPrompt },
+                          { role: 'user', content: html }
+                        ],
+                        response_format: { type: 'json_object' }
+                      });
+                      const listing = JSON.parse(aiResp.choices[0].message.content);
+                      listing.scrapedData.source = 'BusinessForSale';
+                      listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                      listing.businessId = detailUrl || listing.businessId;
+                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                      allListings.push(listing);
+                    } catch (err) {
+                      console.error(`BusinessForSale parse error on page ${pageNum}:`, err.message);
+                    }
+                  }
+                } catch (err) {
+                  console.error(`BusinessForSale load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
+                  const content = await page.content();
+                  console.log(`Page content snippet: ${content.substring(0, 500)}...`);
+                  await page.screenshot({ path: `bfs-error-page${pageNum}-attempt${attempt + 1}.png` });
+                  if (attempt < maxRetries - 1) {
+                    console.log(`Retrying BusinessForSale page ${pageNum} with delay...`);
+                    await sleep(5000 * Math.pow(2, attempt));
+                  } else {
+                    console.log(`Max retries reached for BusinessForSale page ${pageNum}. Skipping to next site...`);
+                    throw new Error(`Failed to scrape BusinessForSale page ${pageNum} after ${maxRetries} attempts`);
+                  }
+                  attempt++;
+                } finally {
+                  await page.close();
+                }
               }
-            }
-          } catch (err) {
-            console.error(`Flippa load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
-            attempt++;
-            if (attempt === maxRetries) {
-              console.log(`Max retries reached for Flippa page ${pageNum}. Skipping...`);
+              await sleep(10000);
             }
           } finally {
-            await page.close();
+            if (browser) await browser.close();
+            browser = null;
           }
-          await sleep(10000);
+        }
+      },
+      {
+        name: 'DealStream',
+        scrape: async () => {
+          browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-blink-features=AutomationControlled',
+              '--disable-web-security',
+              '--disable-features=IsolateOrigins,site-per-process',
+            ],
+            protocolTimeout: 120000
+          });
+
+          try {
+            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+              const dsUrl = pageNum === 1 ? 'https://dealstream.com/search?location=United+States' : `https://dealstream.com/businesses-for-sale/${pageNum}`;
+              console.log(`Scraping DealStream page ${pageNum}: ${dsUrl}`);
+              let attempt = 0;
+              let success = false;
+
+              while (attempt < maxRetries && !success) {
+                const page = await browser.newPage();
+                const userAgents = [
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
+                ];
+                const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+                await page.setUserAgent(userAgent);
+                await page.setViewport({ width: 1280, height: 800 });
+
+                await page.evaluateOnNewDocument(() => {
+                  Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                  window.chrome = { runtime: {} };
+                });
+
+                const proxy = await getFreeProxy();
+                if (proxy) {
+                  console.log(`Using proxy for attempt ${attempt + 1}: ${proxy}`);
+                  await page.setExtraHTTPHeaders({ 'Proxy-Server': proxy });
+                } else {
+                  console.log(`No proxy available for attempt ${attempt + 1}`);
+                }
+
+                try {
+                  await page.goto(dsUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+                  await page.evaluate(() => {
+                    window.scrollTo(0, Math.random() * 1000);
+                    const x = Math.random() * 500;
+                    const y = Math.random() * 500;
+                    document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
+                  });
+                  await sleep(2000 + Math.random() * 3000);
+
+                  const isVerificationPresent = await page.evaluate(() => {
+                    return document.querySelector('title')?.innerText.includes('Just a moment...') ||
+                           document.querySelector('#cf-challenge, .cf-please-wait, [id*="captcha"], [class*="captcha"]');
+                  });
+                  if (isVerificationPresent) {
+                    console.log(`Verification screen detected on DealStream page ${pageNum}, attempt ${attempt + 1}`);
+                    await page.screenshot({ path: `dealstream-verification-page${pageNum}-attempt${attempt + 1}.png` });
+                    throw new Error('Verification screen detected');
+                  }
+
+                  await page.waitForSelector('a.list-group-item.post', { timeout: 60000 });
+                  success = true;
+
+                  const dsSnippets = await page.evaluate(() => {
+                    const snippets = [];
+                    const usStates = ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming", "United States"];
+                    document.querySelectorAll('a.list-group-item.post').forEach(el => {
+                      const location = el.querySelector('div.h4')?.innerText.trim() || '';
+                      if (usStates.some(state => location.includes(state))) {
+                        const detailUrl = el.getAttribute('href') || '';
+                        const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://dealstream.com${detailUrl}`;
+                        snippets.push({ html: el.innerHTML, detailUrl: fullUrl });
+                      }
+                    });
+                    return snippets;
+                  });
+                  console.log(`Found ${dsSnippets.length} DealStream listings on page ${pageNum}`);
+
+                  for (const { html, detailUrl } of dsSnippets) {
+                    try {
+                      const aiResp = await openai.chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                          { role: 'system', content: systemPrompt },
+                          { role: 'user', content: html }
+                        ],
+                        response_format: { type: 'json_object' }
+                      });
+                      const listing = JSON.parse(aiResp.choices[0].message.content);
+                      listing.scrapedData.source = 'DealStream';
+                      listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                      listing.businessId = detailUrl || listing.businessId;
+                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                      allListings.push(listing);
+                    } catch (err) {
+                      console.error(`DealStream parse error on page ${pageNum}:`, err.message);
+                    }
+                  }
+                } catch (err) {
+                  console.error(`DealStream load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
+                  const content = await page.content();
+                  console.log(`Page content snippet: ${content.substring(0, 500)}...`);
+                  await page.screenshot({ path: `dealstream-error-page${pageNum}-attempt${attempt + 1}.png` });
+                  if (attempt < maxRetries - 1) {
+                    console.log(`Retrying DealStream page ${pageNum} with delay...`);
+                    await sleep(5000 * Math.pow(2, attempt));
+                  } else {
+                    console.log(`Max retries reached for DealStream page ${pageNum}. Skipping to next site...`);
+                    throw new Error(`Failed to scrape DealStream page ${pageNum} after ${maxRetries} attempts`);
+                  }
+                  attempt++;
+                } finally {
+                  await page.close();
+                }
+              }
+              await sleep(10000);
+            }
+          } finally {
+            if (browser) await browser.close();
+            browser = null;
+          }
+        }
+      },
+      {
+        name: 'BizBuySell',
+        scrape: async () => {
+          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/`;
+            console.log(`Fetching BizBuySell page ${pageNum}: ${url}`);
+            try {
+              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+              const safariAgents = [
+                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+              ];
+              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+              const start = Date.now();
+              const response = await axios.get(url, {
+                httpsAgent,
+                timeout: 30000,
+                headers: { 'User-Agent': userAgent }
+              });
+              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
+
+              const $ = cheerio.load(response.data);
+              const snippets = [];
+              $('app-listing-diamond').each((_, el) => {
+                const detailUrl = $(el).find('a').attr('href') || '';
+                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+                snippets.push({ html: $.html(el), detailUrl: fullUrl });
+              });
+              console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
+
+              for (const { html, detailUrl } of snippets) {
+                try {
+                  const aiResp = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: html }
+                    ],
+                    response_format: { type: 'json_object' }
+                  });
+                  const listing = JSON.parse(aiResp.choices[0].message.content);
+                  listing.scrapedData.source = 'BizBuySell';
+                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                  listing.businessId = detailUrl || listing.businessId;
+                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                  allListings.push(listing);
+                } catch (err) {
+                  console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
+                }
+              }
+            } catch (err) {
+              console.error(`Error fetching BizBuySell page ${pageNum}:`, err.message);
+              console.log(`Skipping to next site due to BizBuySell page ${pageNum} failure`);
+              throw new Error(`Failed to scrape BizBuySell page ${pageNum}`);
+            }
+            await sleep(5000);
+          }
+        }
+      },
+      {
+        name: 'Flippa',
+        scrape: async () => {
+          browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--disable-blink-features=AutomationControlled',
+              '--disable-web-security',
+              '--disable-features=IsolateOrigins,site-per-process',
+            ],
+            protocolTimeout: 120000
+          });
+
+          try {
+            for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+              let attempt = 0;
+              let success = false;
+              const flippaUrl = pageNum === 1 ? 'https://flippa.com/online-businesses-united-states' : `https://flippa.com/online-businesses-united-states?page%5Bnumber%5D=${pageNum}`;
+              console.log(`Scraping Flippa page ${pageNum}: ${flippaUrl}`);
+
+              while (attempt < maxRetries && !success) {
+                const page = await browser.newPage();
+                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                await page.setViewport({ width: 1280, height: 800 });
+
+                try {
+                  await page.goto(flippaUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+                  await page.waitForSelector('div[id^="listing-"]', { timeout: 90000 });
+                  success = true;
+
+                  const flipSnippets = await page.evaluate(() => {
+                    const snippets = [];
+                    document.querySelectorAll('div[id^="listing-"]').forEach(el => {
+                      const detailUrl = el.querySelector('a')?.href || '';
+                      snippets.push({ html: el.outerHTML, detailUrl });
+                    });
+                    return snippets;
+                  });
+                  console.log(`Found ${flipSnippets.length} Flippa listings on page ${pageNum}`);
+
+                  for (const { html, detailUrl } of flipSnippets) {
+                    try {
+                      // Scrape detail page and extract specific elements
+                      const detailPage = await browser.newPage();
+                      await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                      await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+                      const detailHtml = await detailPage.content();
+                      const $ = cheerio.load(detailHtml);
+
+                      // Extract relevant sections
+                      const propertiesSummary = $('#properties-summary').html() || '';
+                      const description = $('.listing-description').text().trim().slice(0, 500) || 'No description available';
+                      const detailExtract = `
+                        <div id="properties-summary">${propertiesSummary}</div>
+                        <div class="listing-description">${description}</div>
+                      `;
+
+                      // Combine and truncate
+                      let combinedHtml = `${html}\n<!-- Detail Page Extract -->\n${detailExtract}`;
+                      if (combinedHtml.length > 50000) {
+                        combinedHtml = combinedHtml.slice(0, 50000) + '...';
+                      }
+
+                      const aiResp = await openai.chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                          { role: 'system', content: systemPrompt },
+                          { role: 'user', content: combinedHtml }
+                        ],
+                        response_format: { type: 'json_object' }
+                      });
+                      const listing = JSON.parse(aiResp.choices[0].message.content);
+                      listing.scrapedData.source = 'Flippa';
+                      listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                      listing.businessId = detailUrl || listing.businessId;
+                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                      allListings.push(listing);
+                      await detailPage.close();
+                    } catch (err) {
+                      console.error(`Flippa parse error for ${detailUrl} on page ${pageNum}:`, err.message);
+                    }
+                  }
+                } catch (err) {
+                  console.error(`Flippa load/error on page ${pageNum}, attempt ${attempt + 1}:`, err.message);
+                  if (attempt < maxRetries - 1) {
+                    console.log(`Retrying Flippa page ${pageNum} with delay...`);
+                    await sleep(5000 * Math.pow(2, attempt));
+                  } else {
+                    console.log(`Max retries reached for Flippa page ${pageNum}. Skipping to next site...`);
+                    throw new Error(`Failed to scrape Flippa page ${pageNum} after ${maxRetries} attempts`);
+                  }
+                  attempt++;
+                } finally {
+                  await page.close();
+                }
+                await sleep(10000);
+              }
+            }
+          } finally {
+            if (browser) await browser.close();
+            browser = null;
+          }
+        }
+      },
+      {
+        name: 'SunbeltNetwork',
+        scrape: async () => {
+          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+            const url = pageNum === 1 ? 'https://www.sunbeltnetwork.com/business-search/business-results/' : `https://www.sunbeltnetwork.com/business-search/business-results/page/${pageNum}/`;
+            console.log(`Fetching Sunbelt Network page ${pageNum}: ${url}`);
+            try {
+              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+              const safariAgents = [
+                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+              ];
+              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+              const start = Date.now();
+              const response = await axios.get(url, {
+                httpsAgent,
+                timeout: 30000,
+                headers: { 'User-Agent': userAgent }
+              });
+              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
+
+              const $ = cheerio.load(response.data);
+              const snippets = [];
+              $('article.latestBusinesses__item').each((_, el) => {
+                const detailUrl = $(el).find('a[href*="/listing-details/"]').attr('href') || '';
+                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.sunbeltnetwork.com${detailUrl}`;
+                snippets.push({ html: $.html(el), detailUrl: fullUrl });
+              });
+              console.log(`Found ${snippets.length} Sunbelt Network listings on page ${pageNum}`);
+
+              for (const { html, detailUrl } of snippets) {
+                try {
+                  const aiResp = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: html }
+                    ],
+                    response_format: { type: 'json_object' }
+                  });
+                  const listing = JSON.parse(aiResp.choices[0].message.content);
+                  listing.scrapedData.source = 'Sunbelt Network';
+                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                  listing.businessId = detailUrl || listing.businessId;
+                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                  allListings.push(listing);
+                } catch (err) {
+                  console.error(`Sunbelt Network parse error on page ${pageNum}:`, err.message);
+                }
+              }
+            } catch (err) {
+              console.error(`Error fetching Sunbelt Network page ${pageNum}:`, err.message);
+              console.log(`Skipping to next site due to Sunbelt Network page ${pageNum} failure`);
+              throw new Error(`Failed to scrape Sunbelt Network page ${pageNum}`);
+            }
+            await sleep(5000);
+          }
         }
       }
+    ];
 
-      await browser.close();
-      browser = null;
-    }
-
-    // 5) SunbeltNetwork.com via Axios + Cheerio
-    {
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-        const url = pageNum === 1 ? 'https://www.sunbeltnetwork.com/business-search/business-results/' : `https://www.sunbeltnetwork.com/business-search/business-results/page/${pageNum}/`;
-        console.log(`Fetching Sunbelt Network page ${pageNum}: ${url}`);
-        try {
-          const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
-          const safariAgents = [
-            'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
-          ];
-          const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
-          const start = Date.now();
-          const response = await axios.get(url, {
-            httpsAgent,
-            timeout: 30000,
-            headers: { 'User-Agent': userAgent }
-          });
-          const elapsed = ((Date.now() - start) / 1000).toFixed(4);
-          console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
-
-          const $ = cheerio.load(response.data);
-          const snippets = [];
-          $('article.latestBusinesses__item').each((_, el) => {
-            const detailUrl = $(el).find('a[href*="/listing-details/"]').attr('href') || '';
-            const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.sunbeltnetwork.com${detailUrl}`;
-            snippets.push({ html: $.html(el), detailUrl: fullUrl });
-          });
-          console.log(`Found ${snippets.length} Sunbelt Network listings on page ${pageNum}`);
-
-          for (const { html, detailUrl } of snippets) {
-            try {
-              const aiResp = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: html }
-                ],
-                response_format: { type: 'json_object' }
-              });
-              const listing = JSON.parse(aiResp.choices[0].message.content);
-              listing.scrapedData.source = 'Sunbelt Network';
-              listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-              listing.businessId = detailUrl || listing.businessId;
-              console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-              allListings.push(listing);
-            } catch (err) {
-              console.error(`Sunbelt Network parse error on page ${pageNum}:`, err.message);
-            }
-          }
-        } catch (err) {
-          console.error(`Error fetching Sunbelt Network page ${pageNum}:`, err.message);
+    // Process each site sequentially, skipping to the next on failure
+    for (const site of siteScrapers) {
+      try {
+        console.log(`Starting scrape for ${site.name}`);
+        await site.scrape();
+        console.log(`Completed scrape for ${site.name}`);
+      } catch (err) {
+        console.error(`Failed to scrape ${site.name}: ${err.message}. Moving to next site...`);
+        if (browser) {
+          await browser.close();
+          browser = null;
         }
-        await sleep(5000);
       }
     }
 
@@ -631,4 +671,3 @@ const scrapeBusinesses = async () => {
 };
 
 module.exports = { scrapeBusinesses };
-// scrapeBusinesses();
