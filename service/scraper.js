@@ -537,7 +537,7 @@ const scrapeBusinesses = async () => {
             browser = null;
           }
         }
-      }
+      },
       {
         name: 'SunbeltNetwork',
         scrape: async () => {
