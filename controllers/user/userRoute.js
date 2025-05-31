@@ -22,7 +22,7 @@ const transporter = nodemailer.createTransport({
 router.post('/sign-up', signup, async (req, res) => {
   try {
     console.log('Signup attempt:', req.body);
-    const { fullName, email, password, country, role } = req.body;
+    const { fullName, email, password, country, role, phoneNumber } = req.body;
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       console.log('Email exists:', email);
@@ -32,6 +32,7 @@ router.post('/sign-up', signup, async (req, res) => {
     const verificationToken = crypto.randomBytes(32).toString('hex');
     req.body.verificationToken = verificationToken;
     req.body.isVerified = false;
+    req.body.phoneNumber = phoneNumber;
 
     console.log('Creating user with token:', verificationToken);
     await UserController.signup(req, res);

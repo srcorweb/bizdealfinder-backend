@@ -18,6 +18,11 @@ const userSchema = new Schema({
     required: true,
     unique: true,
   },
+  phoneNumber: {
+    type: String,
+    required: false,
+    match: [/^\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})$/, 'Invalid phone number format'],
+  },
   role: {
     type: String,
     enum: ['user', 'admin'],
