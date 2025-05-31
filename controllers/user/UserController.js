@@ -11,7 +11,7 @@ const HashMethods = require("../../config/HashMethode");
 module.exports = {
   signup: async (req, res) => {
     try {
-      const { fullName, email, role, profile, password, isVerified, verificationToken } = req.body;
+      const { fullName, email, role, profile, password, isVerified, verificationToken, phoneNumber } = req.body;
       const newUser = new User({
         fullName,
         email,
@@ -19,7 +19,8 @@ module.exports = {
         role: role || 'user',
         profile,
         isVerified: isVerified || false,
-        verificationToken: verificationToken || null
+        verificationToken: verificationToken || null,
+        phoneNumber
       });
       await newUser.save();
       return { message: 'User created successfully' };
