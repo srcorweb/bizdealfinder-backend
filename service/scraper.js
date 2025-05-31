@@ -112,7 +112,7 @@ const scrapeBusinesses = async () => {
     For BizBuySell, prepend "https://www.bizbuysell.com" to relative URLs. For DealStream, prepend "https://dealstream.com". For Sunbelt Network, prepend "https://www.sunbeltnetwork.com". For BusinessForSale, prepend "https://us.businessesforsale.com". For Flippa, prepend "https://flippa.com". Discard non-USA listings for DealStream, Sunbelt Network, BusinessForSale, and Flippa by checking if location includes a US state or "United States". Use defaults: 0 for numbers, false for booleans, "Unknown" for strings, "Services" for sector only as a last resort. Return JSON only, no markdown. Log the extracted JSON for debugging.`;
 
     const allListings = [];
-    const maxPages = 50;
+    const maxPages = 20;
     const maxRetries = 1;
 
     // Array of site scraping functions to process sequentially
@@ -446,24 +446,24 @@ const scrapeBusinesses = async () => {
             ],
             protocolTimeout: 120000
           });
-
+      
           try {
             for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
               let attempt = 0;
               let success = false;
               const flippaUrl = pageNum === 1 ? 'https://flippa.com/online-businesses-united-states' : `https://flippa.com/online-businesses-united-states?page%5Bnumber%5D=${pageNum}`;
               console.log(`Scraping Flippa page ${pageNum}: ${flippaUrl}`);
-
+      
               while (attempt < maxRetries && !success) {
                 const page = await browser.newPage();
-                await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-                await page.setViewport({ width: 1280, height: 800 });
-
                 try {
+                  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                  await page.setViewport({ width: 1280, height: 800 });
+      
                   await page.goto(flippaUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
                   await page.waitForSelector('div[id^="listing-"]', { timeout: 90000 });
                   success = true;
-
+      
                   const flipSnippets = await page.evaluate(() => {
                     const snippets = [];
                     document.querySelectorAll('div[id^="listing-"]').forEach(el => {
@@ -473,31 +473,29 @@ const scrapeBusinesses = async () => {
                     return snippets;
                   });
                   console.log(`Found ${flipSnippets.length} Flippa listings on page ${pageNum}`);
-
+      
                   for (const { html, detailUrl } of flipSnippets) {
+                    let detailPage;
                     try {
-                      // Scrape detail page and extract specific elements
-                      const detailPage = await browser.newPage();
+                      detailPage = await browser.newPage();
                       await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
                       await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-
+      
                       const detailHtml = await detailPage.content();
                       const $ = cheerio.load(detailHtml);
-
-                      // Extract relevant sections
+      
                       const propertiesSummary = $('#properties-summary').html() || '';
                       const description = $('.listing-description').text().trim().slice(0, 500) || 'No description available';
                       const detailExtract = `
                         <div id="properties-summary">${propertiesSummary}</div>
                         <div class="listing-description">${description}</div>
                       `;
-
-                      // Combine and truncate
+      
                       let combinedHtml = `${html}\n<!-- Detail Page Extract -->\n${detailExtract}`;
                       if (combinedHtml.length > 50000) {
                         combinedHtml = combinedHtml.slice(0, 50000) + '...';
                       }
-
+      
                       const aiResp = await openai.chat.completions.create({
                         model: 'gpt-4o-mini',
                         messages: [
@@ -512,9 +510,10 @@ const scrapeBusinesses = async () => {
                       listing.businessId = detailUrl || listing.businessId;
                       console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
                       allListings.push(listing);
-                      await detailPage.close();
                     } catch (err) {
                       console.error(`Flippa parse error for ${detailUrl} on page ${pageNum}:`, err.message);
+                    } finally {
+                      if (detailPage) await detailPage.close();
                     }
                   }
                 } catch (err) {
@@ -538,7 +537,7 @@ const scrapeBusinesses = async () => {
             browser = null;
           }
         }
-      },
+      }
       {
         name: 'SunbeltNetwork',
         scrape: async () => {
