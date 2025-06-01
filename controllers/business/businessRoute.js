@@ -235,197 +235,72 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
-    let mongoQuery = {};
-
-    const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
-    const hasBoolean = booleanTerms.some(term => query.includes(term));
-    const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
-    const location = locationMatch ? locationMatch[1].trim() : '';
-
-    if (hasBoolean && location) {
-      const booleanConditions = [];
-      if (query.includes('distressed')) booleanConditions.push({ distressed: true });
-      if (query.includes('owner absentee') || query.includes('absentee')) booleanConditions.push({ ownerAbsentee: true });
-      if (query.includes('sba') || query.includes('approved')) booleanConditions.push({ sbaPreApproved: true });
-      if (query.includes('brick and mortar')) booleanConditions.push({ brickAndMortar: true });
-      if (query.includes('seller financing')) booleanConditions.push({ sellerFinancing: true });
-      if (query.includes('zero down')) bool
-System: eanConditions.push({ zeroDown: true });
-
-      mongoQuery = {
-        $and: [
-          { $or: booleanConditions },
-          {
-            $or: [
-              { 'location.state': { $regex: `^${location}$`, $options: 'i' } },
-              { 'location.city': { $regex: location, $options: 'i' } }
-            ]
-          }
-        ]
-      };
-    } else if (query === 'distressed') {
-      mongoQuery.distressed = true;
-    } else if (query === 'owner absentee' || query === 'absentee') {
-      mongoQuery.ownerAbsentee = true;
-    } else if (query === 'brick and mortar') {
-      mongoQuery.brickAndMortar = true;
-    } else if (query === 'seller financing') {
-      mongoQuery.sellerFinancing = true;
-    } else if (query === 'zero down') {
-      mongoQuery.zeroDown = true;
-    } else if (query.includes('restaurants') || query.includes('restaurant')) {
-      mongoQuery.sector = 'Food';
-    } else {
-      const queryWords = query.split(' ').filter(w => w.length > 2);
-      mongoQuery = {
-        $or: [
-          { name: { $regex: queryWords.join('|'), $options: 'i' } },
-          { sector: { $regex: queryWords.join('|'), $options: 'i' } },
-          { 'location.city': { $regex: queryWords.join('|'), $options: 'i' } },
-          { 'location.state': { $regex: queryWords.join('|'), $options: 'i' } }
-        ]
-      };
-
-      if (queryWords.includes('distressed')) mongoQuery.distressed = true;
-      if (queryWords.includes('sba') || query.includes('approved')) mongoQuery.sbaPreApproved = true;
-      if (queryWords.includes('absentee') || queryWords.includes('owner')) mongoQuery.ownerAbsentee = true;
-      if (queryWords.includes('brick') && queryWords.includes('mortar')) mongoQuery.brickAndMortar = true;
-      if (queryWords.includes('seller') && queryWords.includes('financing')) mongoQuery.sellerFinancing = true;
-      if (queryWords.includes('zero') && queryWords.includes('down')) mongoQuery.zeroDown = true;
-      if (query.includes('under')) {
-        const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
-        if (priceMatch) {
-          const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-          mongoQuery.price = { $lte: price };
+    let searchStage = {
+      $search: {
+        index: 'business_search',
+        compound: {
+          should: [
+            { text: { query, path: ['name', 'description', 'sector'], score: { boost: { value: 2 } } } },
+            { text: { query, path: ['location.city', 'location.state'] } }
+          ]
         }
       }
+    };
+
+    // Handle price range (e.g., "under 500k")
+    let priceFilter = {};
+    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
+    if (priceMatch) {
+      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+      priceFilter = { price: { $lte: price } };
     }
 
-    const businesses = await Business.find(mongoQuery).limit(100).lean();
+    // Handle boolean attributes
+    const booleanFilters = [];
+    if (query.includes('distressed')) booleanFilters.push({ distressed: true });
+    if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
+    if (query.includes('sba') || query.includes('approved')) booleanFilters.push({ sbaPreApproved: true });
+    if (query.includes('brick and mortar')) booleanFilters.push({ brickAndMortar: true });
+    if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
+    if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
+
+    // Build aggregation pipeline
+    const pipeline = [
+      searchStage,
+      { $match: { ...priceFilter, $and: booleanFilters } },
+      { $sort: { score: { $meta: 'searchScore' }, _id: 1 } },
+      { $limit: 50 },
+      {
+        $project: {
+          businessId: 1,
+          name: 1,
+          sector: 1,
+          price: 1,
+          revenue: 1,
+          cashFlow: 1,
+          location: 1,
+          description: { $substr: ['$description', 0, 1000] },
+          scrapedData: { detailUrl: 1 },
+          sourceContent: {
+            financials: 1,
+            detailedInfo: 1,
+            content: { $substr: ['$sourceContent.content', 0, 1000] }
+          },
+          distressed: 1,
+          ownerAbsentee: 1,
+          sbaPreApproved: 1,
+          sellerFinancing: 1,
+          zeroDown: 1,
+          brickAndMortar: 1,
+          score: { $meta: 'searchScore' }
+        }
+      }
+    ];
+
+    const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
 
-    if (['distressed', 'owner absentee', 'absentee', 'brick and mortar', 'seller financing', 'zero down'].includes(query)) {
-      console.log('Fetched boolean listings:', businesses.length);
-      return res.status(200).json(businesses);
-    }
-
-    const results = [];
-    const batchSize = 5; // Reduced batch size to mitigate rate limits
-    for (let i = 0; i < businesses.length; i += batchSize) {
-      const batch = businesses.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (business) => {
-        try {
-          // Check relevance cache
-          const cacheKey = `relevance:${query}:${business.businessId}`;
-          const cachedResult = relevanceCache.get(cacheKey);
-          if (cachedResult) {
-            console.log(`Serving relevance from cache for ${business.businessId}`);
-            return cachedResult;
-          }
-
-          // Truncate and select relevant business fields
-          const truncatedBusiness = {
-            businessId: business.businessId,
-            name: business.name,
-            sector: business.sector,
-            price: business.price,
-            revenue: business.revenue,
-            cashFlow: business.cashFlow,
-            location: business.location,
-            description: business.description?.substring(0, 1000), // Limit to 1000 chars
-            scrapedData: { detailUrl: business.scrapedData?.detailUrl },
-            sourceContent: {
-              financials: business.sourceContent?.financials,
-              detailedInfo: business.sourceContent?.detailedInfo,
-              content: business.sourceContent?.content?.substring(0, 1000) // Limit to 1000 chars
-            },
-            distressed: business.distressed,
-            ownerAbsentee: business.ownerAbsentee,
-            sbaPreApproved: business.sbaPreApproved,
-            sellerFinancing: business.sellerFinancing,
-            zeroDown: business.zeroDown,
-            brickAndMortar: business.brickAndMortar
-          };
-
-          // Estimate token count (rough: 1 token ~ 4 chars)
-          const messageContent = `Query: ${q}\nListing: ${JSON.stringify(truncatedBusiness)}`;
-          const approxTokens = messageContent.length / 4;
-          if (approxTokens > 120000) {
-            console.warn(`Skipping ${business.businessId}: estimated ${approxTokens} tokens exceeds limit`);
-            return { businessId: business.businessId, relevance: 50, reason: 'Listing data too large for processing' };
-          }
-
-          const response = await retryWithBackoff(() =>
-            openai.chat.completions.create({
-              model: 'gpt-4o-mini',
-              messages: [
-                {
-                  role: 'system',
-                  content: `Evaluate business listings for relevance to a user query. Given a query and JSON data, return:
-                  - businessId: string
-                  - relevance: number (0-100)
-                  - reason: string
-
-                  Map user terms to fields:
-                  - "restaurants", "cafes", "bars" → sector: "Food"
-                  - "shops", "stores" → sector: "Retail" or "Services"
-                  - "car shops", "auto shops", "car wash", "garage" → sector: "Retail" or "Services", prioritize auto-related businesses
-                  - "car" → match name or sector, prioritize auto-related
-                  - "distressed" → distressed: true
-                  - "sba", "approved" → sbaPreApproved: true
-                  - "absentee", "owner" → ownerAbsentee: true
-                  - "brick and mortar" → brickAndMortar: true
-                  - "seller financing" → sellerFinancing: true
-                  - "zero down" → zeroDown: true
-                  - Location terms (e.g., "Georgia") → location.city or location.state
-                  - Price terms (e.g., "under 500k") → price <= 500000
-
-                  Understand the query's intent like a human. Prioritize exact matches for boolean fields (e.g., zeroDown: true) and location (e.g., location.state: "Georgia"). For queries with location (e.g., "in Georgia"), heavily penalize listings not matching the location (subtract 40 from relevance). Score above 50 for clear matches, below 30 for poor matches, considering name, sector, description, price, location. Return JSON only.
-
-                  Examples:
-                  Query: "zero down in Georgia"
-                  Listing: { "name": "Retail Store", "sector": "Retail", "zeroDown": true, "location": { "state": "Georgia" } }
-                  Output: { "businessId": "...", "relevance": 95, "reason": "Matches zeroDown and Georgia location." }
-                  Listing: { "name": "Store", "sector": "Retail", "zeroDown": true, "location": { "state": "Florida" } }
-                  Output: { "businessId": "...", "relevance": 55, "reason": "Matches zeroDown but not in Georgia." }
-                  Query: "restaurants in Florida"
-                  Listing: { "name": "Pizza Place", "sector": "Food", "location": { "state": "Florida" } }
-                  Output: { "businessId": "...", "relevance": 90, "reason": "Matches Food sector and Florida location." }`
-                },
-                {
-                  role: 'user',
-                  content: messageContent
-                }
-              ],
-              response_format: { type: 'json_object' }
-            })
-          );
-          const result = JSON.parse(response.choices[0].message.content);
-          relevanceCache.set(cacheKey, result); // Cache the result
-          return result;
-        } catch (error) {
-          console.error('Open AI error for', business.businessId, error.message);
-          return { businessId: business.businessId, relevance: 0, reason: 'Failed to process' };
-        }
-      });
-      const batchResults = await Promise.all(batchPromises);
-      results.push(...batchResults);
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Increased delay to 2000ms
-    }
-
-    const relevantResults = results
-      .filter(result => result.relevance > 50)
-      .map(result => {
-        const business = businesses.find(b => b.businessId === result.businessId);
-        if (business) {
-          return { ...business, relevance: result.relevance };
-        }
-        return null;
-      })
-      .filter(b => b);
-
-    console.log('Relevant listings:', relevantResults.length);
-    res.status(200).json(relevantResults);
+    res.status(200).json(businesses);
   } catch (error) {
     console.error('AI search error:', error);
     res.status(500).json({ error: error.message });
