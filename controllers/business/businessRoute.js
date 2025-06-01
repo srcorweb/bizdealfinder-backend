@@ -267,7 +267,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     // Build aggregation pipeline
     const pipeline = [
       searchStage,
-      { $match: { ...priceFilter, $and: booleanFilters } },
+      {
+        $match: {
+          ...priceFilter,
+          ...(booleanFilters.length > 0 && { $and: booleanFilters }) // Conditionally include $and
+        }
+      },
       { $sort: { score: { $meta: 'searchScore' }, _id: 1 } },
       { $limit: 50 },
       {
