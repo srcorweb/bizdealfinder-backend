@@ -270,10 +270,15 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       {
         $match: {
           ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters }) // Conditionally include $and
+          ...(booleanFilters.length > 0 && { $and: booleanFilters })
         }
       },
-      { $sort: { score: { $meta: 'searchScore' }, _id: 1 } },
+      {
+        $addFields: {
+          score: { $meta: 'searchScore' } // Capture searchScore as a field
+        }
+      },
+      { $sort: { score: -1, _id: 1 } }, // Sort by score descending
       { $limit: 50 },
       {
         $project: {
@@ -297,7 +302,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           sellerFinancing: 1,
           zeroDown: 1,
           brickAndMortar: 1,
-          score: { $meta: 'searchScore' }
+          score: 1
         }
       }
     ];
