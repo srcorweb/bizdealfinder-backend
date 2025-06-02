@@ -282,12 +282,15 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           numCandidates: 400,                    // 4×limit is a good default
           filter: {
             ...priceFilter,
-            ...(location && { 'location.state': { $regex: location, $options: 'i' } }),
+            ...(location && { 'location.state': location }),
             ...(booleanFilters.length && { $and: booleanFilters })
           }
         }
       },
       { $addFields: { score: { $meta: 'vectorSearchScore' } } },
+      {
+        $match: { 'location.state': new RegExp(location, 'i') }
+      },
       { $sort: { score: -1, _id: 1 } },
       { $limit: 100 },
       {
