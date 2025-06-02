@@ -228,80 +228,68 @@ router.get('/search', authMiddleware, async (req, res) => {
   }
 });
 
-// AI-powered relevance search
 router.get('/ai-search', authMiddleware, async (req, res) => {
   try {
+    /* ────────── 1. basic input ────────── */
     const { q } = req.query;
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
     const terms = query.split(' ').filter(t => t.length > 2);
+
+    /* ────────── 2. light NLP filters ────────── */
     let location = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
-      terms.splice(terms.indexOf('in'), terms.length);
     } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
       location = query;
     }
 
-    // Build search clauses
-    const mustClauses = [];
-    const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
-    ];
-
-    if (location) {
-      shouldClauses.push({
-        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
-      });
-    }
-
-    // Handle price range
     let priceFilter = {};
     const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
     if (priceMatch) {
-      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-      priceFilter = { price: { $lte: price } };
+      const num  = parseFloat(priceMatch[1]);
+      const mult = priceMatch[2].toLowerCase() === 'm' ? 1_000_000 : 1_000;
+      priceFilter = { price: { $lte: num * mult } };
     }
 
-    // Handle boolean attributes
     const booleanFilters = [];
-    if (query.includes('distressed')) booleanFilters.push({ distressed: true });
-    if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
-    if (query.includes('sba') || query.includes('approved')) booleanFilters.push({ sbaPreApproved: true });
+    if (query.includes('distressed'))       booleanFilters.push({ distressed: true });
+    if (query.includes('owner absentee') ||
+        query.includes('absentee'))         booleanFilters.push({ ownerAbsentee: true });
+    if (query.includes('sba') ||
+        query.includes('approved'))         booleanFilters.push({ sbaPreApproved: true });
     if (query.includes('brick and mortar')) booleanFilters.push({ brickAndMortar: true });
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
-    if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
+    if (query.includes('zero down'))        booleanFilters.push({ zeroDown: true });
 
-    // Build aggregation pipeline
+    /* ────────── 3. embed the query ────────── */
+    const { data } = await openai.embeddings.create({
+      model: 'text-embedding-ada-002',
+      input: query
+    });
+    const queryVector = data[0].embedding;
+
+    /* ────────── 4. vector search pipeline ────────── */
     const pipeline = [
       {
-        $search: {
-          index: 'business_search',
-          compound: {
-            must: mustClauses,
-            should: shouldClauses,
-            minimumShouldMatch: 1
+        $vectorSearch: {
+          index: 'vector_index',                 // Atlas Vector Search index
+          path:  'descriptionEmbedding',
+          queryVector,
+          limit: 100,                            // how many to return
+          numCandidates: 400,                    // 4×limit is a good default
+          filter: {
+            ...priceFilter,
+            ...(location && { 'location.state': { $regex: location, $options: 'i' } }),
+            ...(booleanFilters.length && { $and: booleanFilters })
           }
         }
       },
-      {
-        $match: {
-          ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
-        }
-      },
-      {
-        $addFields: {
-          score: { $meta: 'searchScore' }
-        }
-      },
+      { $addFields: { score: { $meta: 'vectorSearchScore' } } },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }, // Increased limit for broader results
+      { $limit: 100 },
       {
         $project: {
           businessId: 1,
@@ -330,12 +318,10 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     ];
 
     const businesses = await Business.aggregate(pipeline).exec();
-    console.log('Fetched listings:', businesses.length);
-
     res.status(200).json(businesses);
-  } catch (error) {
-    console.error('AI search error:', error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error('AI-search error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
