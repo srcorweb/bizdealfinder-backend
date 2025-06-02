@@ -235,15 +235,25 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
+    const cacheKey = `search:${query}`;
+    const cachedResults = relevanceCache.get(cacheKey);
+    if (cachedResults) {
+      console.log(`Serving cached results for query: ${query}`);
+      return res.status(200).json(cachedResults);
+    }
+
     const terms = query.split(' ').filter(t => t.length > 2);
     let location = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
       terms.splice(terms.indexOf('in'), terms.length);
+    } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
+      location = query;
     }
 
     // Build Atlas Search clauses
+    const mustClauses = [];
     const shouldClauses = [
       { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 2 } } },
       { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } },
@@ -251,12 +261,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     ];
 
     if (location) {
-      shouldClauses.push({
-        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 10 } } }
+      mustClauses.push({
+        text: { query: location, path: 'location.state', score: { boost: { value: 10 } } }
       });
     }
 
-    // Build regex-based query
+    // Regex-based query for additional filtering
     let mongoQuery = {};
     const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
     const hasBoolean = booleanTerms.some(term => query.includes(term));
@@ -273,12 +283,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       mongoQuery = {
         $and: [
           { $or: booleanConditions },
-          {
-            $or: [
-              { 'location.state': { $regex: `^${location}$`, $options: 'i' } },
-              { 'location.city': { $regex: location, $options: 'i' } }
-            ]
-          }
+          { 'location.state': { $regex: `^${location}$`, $options: 'i' } }
         ]
       };
     } else if (query === 'distressed') {
@@ -293,6 +298,16 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       mongoQuery.zeroDown = true;
     } else if (query.includes('restaurants') || query.includes('restaurant')) {
       mongoQuery.sector = 'Food';
+    } else if (query.includes('coffee') || query.includes('cafe')) {
+      mongoQuery.sector = 'Food';
+      shouldClauses.push({
+        text: { query: 'coffee cafe', path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } }
+      });
+    } else if (query.includes('liquor') || query.includes('bottle')) {
+      mongoQuery.sector = { $in: ['Food', 'Retail'] };
+      shouldClauses.push({
+        text: { query: 'liquor bottle', path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } }
+      });
     } else {
       const queryWords = query.split(' ').filter(w => w.length > 2);
       mongoQuery = {
@@ -325,6 +340,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $search: {
           index: 'business_search',
           compound: {
+            must: mustClauses,
             should: shouldClauses,
             minimumShouldMatch: 1
           }
@@ -336,7 +352,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           searchScore: { $meta: 'searchScore' }
         }
       },
-      { $limit: 100 },
+      { $sort: { searchScore: -1, _id: 1 } },
+      { $limit: 100 }, // Limit to top 100 for OpenAI scoring
       {
         $project: {
           businessId: 1,
@@ -438,9 +455,9 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
                   - "brick and mortar" → brickAndMortar: true
                   - "seller financing" → sellerFinancing: true
                   - "zero down" → zeroDown: true
-                  - Location terms (e.g., "California") → location.state or location.city
+                  - Location terms (e.g., "Texas") → location.state or location.city
                   - Price terms (e.g., "under 500k") → price <= 500000
-                  Prioritize exact matches for boolean fields, sector, and location (penalize non-matching locations by -40). Score above 50 for clear matches, below 30 for poor matches, based on name, sector, description, price, location. Return JSON only.`
+                  Prioritize exact matches for sector, boolean fields, and location (penalize non-matching locations by -40). Score above 50 for clear matches, below 30 for poor matches, based on name, sector, description, price, location. Return JSON only.`
                 },
                 { role: 'user', content: messageContent }
               ],
@@ -457,7 +474,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       });
       const batchResults = await Promise.all(batchPromises);
       results.push(...batchResults);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     const relevantResults = results
@@ -472,6 +489,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       .filter(b => b)
       .sort((a, b) => b.relevance - a.relevance);
 
+    // Cache final results
+    relevanceCache.set(cacheKey, relevantResults, 3600);
     console.log('Relevant listings:', relevantResults.length);
     res.status(200).json(relevantResults);
   } catch (error) {
