@@ -245,18 +245,38 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       location = query;
     }
 
+    // Map keywords to sectors
+    const sectorMap = {
+      'coffee': 'Food',
+      'restaurant': 'Food',
+      'cafe': 'Food',
+      'liquor': 'Retail',
+      'store': 'Retail',
+      'shop': 'Retail'
+    };
+    let sectorFilter = [];
+    for (const term of terms) {
+      if (sectorMap[term]) {
+        sectorFilter.push({ sector: sectorMap[term] });
+      }
+    }
+
     // Build search clauses
     const mustClauses = [];
     const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 2 } } },
+      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } },
+      { text: { query: terms.join(' '), path: 'description', score: { boost: { value: 1 } }, fuzzy: { maxEdits: 2 } } }
     ];
 
     if (location) {
-      shouldClauses.push({
-        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
+      mustClauses.push({
+        text: { query: location, path: ['location.state'], score: { boost: { value: 10 } } }
       });
+    }
+
+    if (sectorFilter.length > 0) {
+      mustClauses.push({ $or: sectorFilter });
     }
 
     // Handle price range
@@ -289,19 +309,19 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       {
-        $match: {
-          ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
-        }
-      },
-      {
         $addFields: {
           score: { $meta: 'searchScore' }
         }
       },
+      {
+        $match: {
+          score: { $gte: 0.5 }, // Filter low-relevance results
+          ...priceFilter,
+          ...(booleanFilters.length > 0 && { $and: booleanFilters })
+        }
+      },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }, // Increased limit for broader results
+      { $limit: 100 },
       {
         $project: {
           businessId: 1,
