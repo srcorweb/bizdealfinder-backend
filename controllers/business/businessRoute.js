@@ -271,7 +271,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
 
     if (location) {
       mustClauses.push({
-        text: { query: location, path: ['location.state'], score: { boost: { value: 10 } } }
+        text: { query: location, path: 'location.state', score: { boost: { value: 10 } } }
       });
     }
 
@@ -302,7 +302,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $search: {
           index: 'business_search',
           compound: {
-            must: mustClauses,
+            ...(mustClauses.length > 0 && { must: mustClauses }),
             should: shouldClauses,
             minimumShouldMatch: 1
           }
