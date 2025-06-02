@@ -241,87 +241,83 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (locationMatch) {
       location = locationMatch[1].trim();
       terms.splice(terms.indexOf('in'), terms.length);
-    } else if (['texas', 'california', 'new york', 'florida', 'alabama', 'alaska', 'arizona', 'arkansas', 'colorado', 'connecticut', 'delaware', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina', 'south dakota', 'tennessee', 'utah', 'vermont', 'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming'].includes(query)) {
-      location = query;
     }
 
-    // Define US states for filtering
-    const usStates = [
-      'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware',
-      'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky',
-      'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri',
-      'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
-      'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island',
-      'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
-      'West Virginia', 'Wisconsin', 'Wyoming'
-    ];
-
-    // Sector-specific term mappings
-    const sectorMappings = [
-      { terms: ['coffee', 'cafe', 'bakery', 'restaurant', 'diner', 'food truck', 'catering'], sector: 'Food', descriptionTerms: ['coffee', 'cafe', 'restaurant', 'baked', 'food'] },
-      { terms: ['liquor', 'bottle', 'wine', 'beer'], sector: ['Food', 'Retail'], descriptionTerms: ['liquor', 'bottle', 'wine', 'beer'] },
-      { terms: ['gas station', 'convenience store', 'fuel'], sector: 'Retail', descriptionTerms: ['gas', 'fuel', 'convenience'] },
-      { terms: ['boutique', 'clothing', 'fashion', 'jewelry'], sector: 'Retail', descriptionTerms: ['boutique', 'clothing', 'fashion', 'jewelry'] },
-      { terms: ['tech', 'startup', 'software', 'app', 'saas'], sector: 'Tech & Media', descriptionTerms: ['tech', 'software', 'application', 'saas'] },
-      { terms: ['gym', 'fitness', 'yoga', 'crossfit'], sector: 'Leisure', descriptionTerms: ['gym', 'fitness', 'yoga', 'crossfit'] },
-      { terms: ['hotel', 'motel', 'resort', 'bnb'], sector: 'Leisure', descriptionTerms: ['hotel', 'motel', 'resort', 'bed and breakfast'] },
-      { terms: ['farm', 'agriculture', 'livestock', 'crop'], sector: 'Agriculture', descriptionTerms: ['farm', 'agriculture', 'livestock', 'crop'] },
-      { terms: ['solar', 'wind', 'oil', 'gas'], sector: 'Energy', descriptionTerms: ['solar', 'wind', 'oil', 'gas'] },
-      { terms: ['construction', 'engineering', 'roofing'], sector: 'Engineering', descriptionTerms: ['construction', 'engineering', 'roofing'] },
-      { terms: ['manufacturing', 'production', 'factory'], sector: 'Manufacturing', descriptionTerms: ['manufacturing', 'production', 'factory'] },
-      { terms: ['ecommerce', 'online', 'website', 'digital'], sector: 'Online', descriptionTerms: ['ecommerce', 'online', 'website', 'digital'] },
-      { terms: ['real estate', 'property', 'realty'], sector: 'Real Estate', descriptionTerms: ['real estate', 'property', 'realty'] },
-      { terms: ['cleaning', 'landscaping', 'consulting', 'accounting'], sector: 'Services', descriptionTerms: ['cleaning', 'landscaping', 'consulting', 'accounting'] },
-      { terms: ['wholesale', 'distribution', 'logistics'], sector: 'Wholesale & Distribution', descriptionTerms: ['wholesale', 'distribution', 'logistics'] },
-      { terms: ['franchise'], sector: 'Franchise Resales', descriptionTerms: ['franchise', 'chain'] }
-    ];
-
-    // Determine sector filter
-    let sectorFilter = {};
-    let descriptionQuery = '';
-    for (const mapping of sectorMappings) {
-      if (mapping.terms.some(term => query.includes(term))) {
-        sectorFilter = { sector: Array.isArray(mapping.sector) ? { $in: mapping.sector } : mapping.sector };
-        descriptionQuery = mapping.descriptionTerms.join(' ');
-        break;
-      }
-    }
-
-    // Build search clauses
-    const mustClauses = [];
+    // Build Atlas Search clauses
     const shouldClauses = [
       { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } }
+      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } },
+      { text: { query: terms.join(' '), path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } } }
     ];
 
-    if (descriptionQuery) {
-      shouldClauses.push({
-        text: { query: descriptionQuery, path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } }
-      });
-    }
-
     if (location) {
-      mustClauses.push({
-        text: { query: location, path: 'location.state', score: { boost: { value: 10 } } }
+      shouldClauses.push({
+        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 10 } } }
       });
     }
 
-    // Handle price range
-    let priceFilter = {};
-    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
-    if (priceMatch) {
-      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-      priceFilter = { price: { $lte: price } };
-    }
+    // Build regex-based query
+    let mongoQuery = {};
+    const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
+    const hasBoolean = booleanTerms.some(term => query.includes(term));
 
-    // Handle boolean attributes
-    const booleanFilters = [];
-    if (query.includes('distressed')) booleanFilters.push({ distressed: true });
-    if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
-    if (query.includes('sba') || query.includes('approved')) booleanFilters.push({ sbaPreApproved: true });
-    if (query.includes('brick and mortar')) booleanFilters.push({ brickAndMortar: true });
-    if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
-    if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
+    if (hasBoolean && location) {
+      const booleanConditions = [];
+      if (query.includes('distressed')) booleanConditions.push({ distressed: true });
+      if (query.includes('owner absentee') || query.includes('absentee')) booleanConditions.push({ ownerAbsentee: true });
+      if (query.includes('sba') || query.includes('approved')) booleanConditions.push({ sbaPreApproved: true });
+      if (query.includes('brick and mortar')) booleanConditions.push({ brickAndMortar: true });
+      if (query.includes('seller financing')) booleanConditions.push({ sellerFinancing: true });
+      if (query.includes('zero down')) booleanConditions.push({ zeroDown: true });
+
+      mongoQuery = {
+        $and: [
+          { $or: booleanConditions },
+          {
+            $or: [
+              { 'location.state': { $regex: `^${location}$`, $options: 'i' } },
+              { 'location.city': { $regex: location, $options: 'i' } }
+            ]
+          }
+        ]
+      };
+    } else if (query === 'distressed') {
+      mongoQuery.distressed = true;
+    } else if (query === 'owner absentee' || query === 'absentee') {
+      mongoQuery.ownerAbsentee = true;
+    } else if (query === 'brick and mortar') {
+      mongoQuery.brickAndMortar = true;
+    } else if (query === 'seller financing') {
+      mongoQuery.sellerFinancing = true;
+    } else if (query === 'zero down') {
+      mongoQuery.zeroDown = true;
+    } else if (query.includes('restaurants') || query.includes('restaurant')) {
+      mongoQuery.sector = 'Food';
+    } else {
+      const queryWords = query.split(' ').filter(w => w.length > 2);
+      mongoQuery = {
+        $or: [
+          { name: { $regex: queryWords.join('|'), $options: 'i' } },
+          { sector: { $regex: queryWords.join('|'), $options: 'i' } },
+          { 'location.city': { $regex: queryWords.join('|'), $options: 'i' } },
+          { 'location.state': { $regex: queryWords.join('|'), $options: 'i' } }
+        ]
+      };
+
+      if (queryWords.includes('distressed')) mongoQuery.distressed = true;
+      if (queryWords.includes('sba') || query.includes('approved')) mongoQuery.sbaPreApproved = true;
+      if (queryWords.includes('absentee') || queryWords.includes('owner')) mongoQuery.ownerAbsentee = true;
+      if (queryWords.includes('brick') && queryWords.includes('mortar')) mongoQuery.brickAndMortar = true;
+      if (queryWords.includes('seller') && queryWords.includes('financing')) mongoQuery.sellerFinancing = true;
+      if (queryWords.includes('zero') && queryWords.includes('down')) mongoQuery.zeroDown = true;
+      if (query.includes('under')) {
+        const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
+        if (priceMatch) {
+          const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+          mongoQuery.price = { $lte: price };
+        }
+      }
+    }
 
     // Build aggregation pipeline
     const pipeline = [
@@ -329,26 +325,17 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $search: {
           index: 'business_search',
           compound: {
-            must: mustClauses,
             should: shouldClauses,
             minimumShouldMatch: 1
           }
         }
       },
-      {
-        $match: {
-          ...sectorFilter,
-          ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          'location.state': { $in: usStates, $ne: 'Confidential' }
-        }
-      },
+      { $match: mongoQuery },
       {
         $addFields: {
-          score: { $meta: 'searchScore' }
+          searchScore: { $meta: 'searchScore' }
         }
       },
-      { $sort: { score: -1, _id: 1 } },
       { $limit: 100 },
       {
         $project: {
@@ -372,7 +359,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           sellerFinancing: 1,
           zeroDown: 1,
           brickAndMortar: 1,
-          score: 1
+          searchScore: 1
         }
       }
     ];
@@ -380,7 +367,113 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
 
-    res.status(200).json(businesses);
+    if (businesses.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    // Score with OpenAI
+    const results = [];
+    const batchSize = 5;
+    for (let i = 0; i < businesses.length; i += batchSize) {
+      const batch = businesses.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (business) => {
+        try {
+          const cacheKey = `relevance:${query}:${business.businessId}`;
+          const cachedResult = relevanceCache.get(cacheKey);
+          if (cachedResult) {
+            console.log(`Serving relevance from cache for ${business.businessId}`);
+            return cachedResult;
+          }
+
+          const truncatedBusiness = {
+            businessId: business.businessId,
+            name: business.name,
+            sector: business.sector,
+            price: business.price,
+            revenue: business.revenue,
+            cashFlow: business.cashFlow,
+            location: business.location,
+            description: business.description,
+            scrapedData: { detailUrl: business.scrapedData?.detailUrl },
+            sourceContent: {
+              financials: business.sourceContent?.financials,
+              detailedInfo: business.sourceContent?.detailedInfo,
+              content: business.sourceContent?.content
+            },
+            distressed: business.distressed,
+            ownerAbsentee: business.ownerAbsentee,
+            sbaPreApproved: business.sbaPreApproved,
+            sellerFinancing: business.sellerFinancing,
+            zeroDown: business.zeroDown,
+            brickAndMortar: business.brickAndMortar
+          };
+
+          const messageContent = `Query: ${q}\nListing: ${JSON.stringify(truncatedBusiness)}`;
+          const approxTokens = messageContent.length / 4;
+          if (approxTokens > 120000) {
+            console.warn(`Skipping ${business.businessId}: estimated ${approxTokens} tokens exceeds limit`);
+            return { businessId: business.businessId, relevance: 50, reason: 'Listing data too large' };
+          }
+
+          const response = await retryWithBackoff(() =>
+            openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content: `Evaluate business listings for relevance to a user query. Given a query and JSON data, return:
+                  - businessId: string
+                  - relevance: number (0-100)
+                  - reason: string
+                  Map user terms to fields:
+                  - "restaurants", "cafes", "bars", "coffee", "bakery" → sector: "Food"
+                  - "liquor", "bottle", "wine" → sector: "Food" or "Retail"
+                  - "shops", "stores", "boutique" → sector: "Retail" or "Services"
+                  - "gas station", "fuel" → sector: "Retail"
+                  - "tech", "startup", "software" → sector: "Tech & Media"
+                  - "gym", "fitness" → sector: "Leisure"
+                  - "distressed" → distressed: true
+                  - "sba", "approved" → sbaPreApproved: true
+                  - "absentee", "owner" → ownerAbsentee: true
+                  - "brick and mortar" → brickAndMortar: true
+                  - "seller financing" → sellerFinancing: true
+                  - "zero down" → zeroDown: true
+                  - Location terms (e.g., "California") → location.state or location.city
+                  - Price terms (e.g., "under 500k") → price <= 500000
+                  Prioritize exact matches for boolean fields, sector, and location (penalize non-matching locations by -40). Score above 50 for clear matches, below 30 for poor matches, based on name, sector, description, price, location. Return JSON only.`
+                },
+                { role: 'user', content: messageContent }
+              ],
+              response_format: { type: 'json_object' }
+            })
+          );
+          const result = JSON.parse(response.choices[0].message.content);
+          relevanceCache.set(cacheKey, result);
+          return result;
+        } catch (error) {
+          console.error('OpenAI error for', business.businessId, error.message);
+          return { businessId: business.businessId, relevance: 0, reason: 'Failed to process' };
+        }
+      });
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    const relevantResults = results
+      .filter(result => result.relevance > 50)
+      .map(result => {
+        const business = businesses.find(b => b.businessId === result.businessId);
+        if (business) {
+          return { ...business, relevance: result.relevance };
+        }
+        return null;
+      })
+      .filter(b => b)
+      .sort((a, b) => b.relevance - a.relevance);
+
+    console.log('Relevant listings:', relevantResults.length);
+    res.status(200).json(relevantResults);
   } catch (error) {
     console.error('AI search error:', error);
     res.status(500).json({ error: error.message });
