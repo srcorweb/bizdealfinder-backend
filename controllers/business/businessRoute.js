@@ -235,19 +235,30 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
-    let searchStage = {
-      $search: {
-        index: 'business_search',
-        compound: {
-          should: [
-            { text: { query, path: ['name', 'description', 'sector'], score: { boost: { value: 2 } } } },
-            { text: { query, path: ['location.city', 'location.state'] } }
-          ]
-        }
-      }
-    };
+    const terms = query.split(' ').filter(t => t.length > 2);
+    let location = '';
+    const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
+    if (locationMatch) {
+      location = locationMatch[1].trim();
+      terms.splice(terms.indexOf('in'), terms.length);
+    }
 
-    // Handle price range (e.g., "under 500k")
+    // Generate query embedding
+    const queryResponse = await openai.embeddings.create({
+      model: 'text-embedding-ada-002',
+      input: query.slice(0, 8000)
+    });
+    const queryEmbedding = queryResponse.data[0].embedding;
+
+    // Build vector search pipeline
+    const mustClauses = [];
+    if (location) {
+      mustClauses.push({
+        text: { query: location, path: ['location.city', 'location.state'] }
+      });
+    }
+
+    // Handle price range
     let priceFilter = {};
     const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
     if (priceMatch) {
@@ -264,22 +275,27 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
     if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
 
-    // Build aggregation pipeline
     const pipeline = [
-      searchStage,
       {
-        $match: {
-          ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters })
+        $vectorSearch: {
+          index: 'business_vector',
+          path: 'descriptionEmbedding',
+          queryVector: queryEmbedding,
+          numCandidates: 150,
+          limit: 50,
+          filter: {
+            ...(mustClauses.length > 0 && { $and: mustClauses }),
+            ...priceFilter,
+            ...(booleanFilters.length > 0 && { $and: booleanFilters })
+          }
         }
       },
       {
         $addFields: {
-          score: { $meta: 'searchScore' } // Capture searchScore as a field
+          score: { $meta: 'vectorSearchScore' }
         }
       },
-      { $sort: { score: -1, _id: 1 } }, // Sort by score descending
-      { $limit: 50 },
+      { $sort: { score: -1, _id: 1 } },
       {
         $project: {
           businessId: 1,
