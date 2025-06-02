@@ -241,6 +241,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (locationMatch) {
       location = locationMatch[1].trim();
       terms.splice(terms.indexOf('in'), terms.length);
+    } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
+      location = query; // Treat single state names as location
     }
 
     // Generate query embedding
@@ -250,23 +252,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     });
     const queryEmbedding = queryResponse.data[0].embedding;
 
-    // Build vector search pipeline
-    const mustClauses = [];
-    if (location) {
-      mustClauses.push({
-        text: { query: location, path: ['location.city', 'location.state'] }
-      });
-    }
-
-    // Handle price range
-    let priceFilter = {};
-    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
-    if (priceMatch) {
-      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-      priceFilter = { price: { $lte: price } };
-    }
-
-    // Handle boolean attributes
+    // Build filters
     const booleanFilters = [];
     if (query.includes('distressed')) booleanFilters.push({ distressed: true });
     if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
@@ -275,6 +261,14 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
     if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
 
+    let priceFilter = {};
+    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
+    if (priceMatch) {
+      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+      priceFilter = { price: { $lte: price } };
+    }
+
+    // Hybrid search pipeline
     const pipeline = [
       {
         $vectorSearch: {
@@ -284,7 +278,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           numCandidates: 150,
           limit: 50,
           filter: {
-            ...(mustClauses.length > 0 && { $and: mustClauses }),
+            ...(location && { 'location.state': { $eq: location } }),
             ...priceFilter,
             ...(booleanFilters.length > 0 && { $and: booleanFilters })
           }
@@ -292,10 +286,59 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       },
       {
         $addFields: {
-          score: { $meta: 'vectorSearchScore' }
+          vectorScore: { $meta: 'vectorSearchScore' }
+        }
+      },
+      {
+        $unionWith: {
+          coll: 'businesses',
+          pipeline: [
+            {
+              $search: {
+                index: 'business_search',
+                compound: {
+                  should: [
+                    { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 5 } } } },
+                    { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 3 } } } }
+                  ],
+                  minimumShouldMatch: 1
+                }
+              }
+            },
+            {
+              $match: {
+                ...(location && { 'location.state': { $eq: location } }),
+                ...priceFilter,
+                ...(booleanFilters.length > 0 && { $and: booleanFilters })
+              }
+            },
+            { $limit: 50 },
+            {
+              $addFields: {
+                textScore: { $meta: 'searchScore' }
+              }
+            }
+          ]
+        }
+      },
+      {
+        $group: {
+          _id: '$businessId',
+          doc: { $first: '$$ROOT' },
+          vectorScore: { $max: '$vectorScore' },
+          textScore: { $max: '$textScore' }
+        }
+      },
+      {
+        $addFields: {
+          score: { $add: [{ $ifNull: ['$vectorScore', 0] }, { $multiply: [{ $ifNull: ['$textScore', 0] }, 2] }] }
         }
       },
       { $sort: { score: -1, _id: 1 } },
+      { $limit: 50 },
+      {
+        $replaceRoot: { newRoot: '$doc' }
+      },
       {
         $project: {
           businessId: 1,
@@ -325,6 +368,10 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
 
     const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
+
+    if (businesses.length === 0) {
+      return res.status(200).json([]);
+    }
 
     res.status(200).json(businesses);
   } catch (error) {
