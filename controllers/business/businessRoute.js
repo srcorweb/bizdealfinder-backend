@@ -241,21 +241,68 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (locationMatch) {
       location = locationMatch[1].trim();
       terms.splice(terms.indexOf('in'), terms.length);
-    } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
+    } else if (['texas', 'california', 'new york', 'florida', 'alabama', 'alaska', 'arizona', 'arkansas', 'colorado', 'connecticut', 'delaware', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina', 'south dakota', 'tennessee', 'utah', 'vermont', 'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming'].includes(query)) {
       location = query;
+    }
+
+    // Define US states for filtering
+    const usStates = [
+      'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut', 'Delaware',
+      'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa', 'Kansas', 'Kentucky',
+      'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan', 'Minnesota', 'Mississippi', 'Missouri',
+      'Montana', 'Nebraska', 'Nevada', 'New Hampshire', 'New Jersey', 'New Mexico', 'New York',
+      'North Carolina', 'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island',
+      'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont', 'Virginia', 'Washington',
+      'West Virginia', 'Wisconsin', 'Wyoming'
+    ];
+
+    // Sector-specific term mappings
+    const sectorMappings = [
+      { terms: ['coffee', 'cafe', 'bakery', 'restaurant', 'diner', 'food truck', 'catering'], sector: 'Food', descriptionTerms: ['coffee', 'cafe', 'restaurant', 'baked', 'food'] },
+      { terms: ['liquor', 'bottle', 'wine', 'beer'], sector: ['Food', 'Retail'], descriptionTerms: ['liquor', 'bottle', 'wine', 'beer'] },
+      { terms: ['gas station', 'convenience store', 'fuel'], sector: 'Retail', descriptionTerms: ['gas', 'fuel', 'convenience'] },
+      { terms: ['boutique', 'clothing', 'fashion', 'jewelry'], sector: 'Retail', descriptionTerms: ['boutique', 'clothing', 'fashion', 'jewelry'] },
+      { terms: ['tech', 'startup', 'software', 'app', 'saas'], sector: 'Tech & Media', descriptionTerms: ['tech', 'software', 'application', 'saas'] },
+      { terms: ['gym', 'fitness', 'yoga', 'crossfit'], sector: 'Leisure', descriptionTerms: ['gym', 'fitness', 'yoga', 'crossfit'] },
+      { terms: ['hotel', 'motel', 'resort', 'bnb'], sector: 'Leisure', descriptionTerms: ['hotel', 'motel', 'resort', 'bed and breakfast'] },
+      { terms: ['farm', 'agriculture', 'livestock', 'crop'], sector: 'Agriculture', descriptionTerms: ['farm', 'agriculture', 'livestock', 'crop'] },
+      { terms: ['solar', 'wind', 'oil', 'gas'], sector: 'Energy', descriptionTerms: ['solar', 'wind', 'oil', 'gas'] },
+      { terms: ['construction', 'engineering', 'roofing'], sector: 'Engineering', descriptionTerms: ['construction', 'engineering', 'roofing'] },
+      { terms: ['manufacturing', 'production', 'factory'], sector: 'Manufacturing', descriptionTerms: ['manufacturing', 'production', 'factory'] },
+      { terms: ['ecommerce', 'online', 'website', 'digital'], sector: 'Online', descriptionTerms: ['ecommerce', 'online', 'website', 'digital'] },
+      { terms: ['real estate', 'property', 'realty'], sector: 'Real Estate', descriptionTerms: ['real estate', 'property', 'realty'] },
+      { terms: ['cleaning', 'landscaping', 'consulting', 'accounting'], sector: 'Services', descriptionTerms: ['cleaning', 'landscaping', 'consulting', 'accounting'] },
+      { terms: ['wholesale', 'distribution', 'logistics'], sector: 'Wholesale & Distribution', descriptionTerms: ['wholesale', 'distribution', 'logistics'] },
+      { terms: ['franchise'], sector: 'Franchise Resales', descriptionTerms: ['franchise', 'chain'] }
+    ];
+
+    // Determine sector filter
+    let sectorFilter = {};
+    let descriptionQuery = '';
+    for (const mapping of sectorMappings) {
+      if (mapping.terms.some(term => query.includes(term))) {
+        sectorFilter = { sector: Array.isArray(mapping.sector) ? { $in: mapping.sector } : mapping.sector };
+        descriptionQuery = mapping.descriptionTerms.join(' ');
+        break;
+      }
     }
 
     // Build search clauses
     const mustClauses = [];
     const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 2 } } },
+      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } }
     ];
 
-    if (location) {
+    if (descriptionQuery) {
       shouldClauses.push({
-        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
+        text: { query: descriptionQuery, path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } }
+      });
+    }
+
+    if (location) {
+      mustClauses.push({
+        text: { query: location, path: 'location.state', score: { boost: { value: 10 } } }
       });
     }
 
@@ -290,9 +337,10 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       },
       {
         $match: {
+          ...sectorFilter,
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
+          'location.state': { $in: usStates, $ne: 'Confidential' }
         }
       },
       {
@@ -301,7 +349,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }, // Increased limit for broader results
+      { $limit: 100 },
       {
         $project: {
           businessId: 1,
