@@ -235,13 +235,6 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
-    const cacheKey = `search:${query}`;
-    const cachedResults = relevanceCache.get(cacheKey);
-    if (cachedResults) {
-      console.log(`Serving cached results for ${query}`);
-      return res.status(200).json(cachedResults);
-    }
-
     const terms = query.split(' ').filter(t => t.length > 2);
     let location = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
@@ -252,52 +245,29 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       location = query;
     }
 
-    const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
-    const isStateOnlyQuery = location && terms.length === 0 && !booleanTerms.some(term => query.includes(term));
-    const isSimpleQuery = isStateOnlyQuery || (booleanTerms.some(term => query.includes(term)) && !locationMatch);
+    // Build search clauses
+    const mustClauses = [];
+    const shouldClauses = [
+      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
+      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
+      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+    ];
 
-    // Handle state-only query
-    if (isStateOnlyQuery) {
-      const pipeline = [
-        {
-          $match: {
-            'location.state': { $regex: `^${location}$`, $options: 'i' }
-          }
-        },
-        {
-          $project: {
-            businessId: 1,
-            name: 1,
-            sector: 1,
-            price: 1,
-            revenue: 1,
-            cashFlow: 1,
-            location: 1,
-            description: { $substr: ['$description', 0, 1000] },
-            scrapedData: { detailUrl: 1 },
-            sourceContent: {
-              financials: 1,
-              detailedInfo: 1,
-              content: { $substr: ['$sourceContent.content', 0, 1000] }
-            },
-            distressed: 1,
-            ownerAbsentee: 1,
-            sbaPreApproved: 1,
-            sellerFinancing: 1,
-            zeroDown: 1,
-            brickAndMortar: 1,
-            score: 1
-          }
-        }
-      ];
-
-      const businesses = await Business.aggregate(pipeline).exec();
-      console.log('Fetched listings:', businesses.length);
-      relevanceCache.set(cacheKey, businesses, 3600);
-      return res.status(200).json(businesses);
+    if (location) {
+      shouldClauses.push({
+        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
+      });
     }
 
-    // Build filters for other queries
+    // Handle price range
+    let priceFilter = {};
+    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
+    if (priceMatch) {
+      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+      priceFilter = { price: { $lte: price } };
+    }
+
+    // Handle boolean attributes
     const booleanFilters = [];
     if (query.includes('distressed')) booleanFilters.push({ distressed: true });
     if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
@@ -306,28 +276,15 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
     if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
 
-    let priceFilter = {};
-    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
-    if (priceMatch) {
-      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-      priceFilter = { price: { $lte: price } };
-    }
-
-    // Atlas Search pipeline
-    const searchPipeline = [
+    // Build aggregation pipeline
+    const pipeline = [
       {
         $search: {
           index: 'business_search',
           compound: {
-            should: [
-              { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-              { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-              { text: { query: terms.join(' '), path: 'description' } }
-            ],
-            minimumShouldMatch: 1,
-            ...(location && {
-              must: [{ text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } } }]
-            })
+            must: mustClauses,
+            should: shouldClauses,
+            minimumShouldMatch: 1
           }
         }
       },
@@ -335,7 +292,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $match: {
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && !isSimpleQuery && { 'location.state': { $regex: location, $options: 'i' } })
+          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
         }
       },
       {
@@ -344,81 +301,37 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: isSimpleQuery ? 50 : 20 }
+      { $limit: 100 }, // Increased limit for broader results
+      {
+        $project: {
+          businessId: 1,
+          name: 1,
+          sector: 1,
+          price: 1,
+          revenue: 1,
+          cashFlow: 1,
+          location: 1,
+          description: { $substr: ['$description', 0, 1000] },
+          scrapedData: { detailUrl: 1 },
+          sourceContent: {
+            financials: 1,
+            detailedInfo: 1,
+            content: { $substr: ['$sourceContent.content', 0, 1000] }
+          },
+          distressed: 1,
+          ownerAbsentee: 1,
+          sbaPreApproved: 1,
+          sellerFinancing: 1,
+          zeroDown: 1,
+          brickAndMortar: 1,
+          score: 1
+        }
+      }
     ];
 
-    let businesses = await Business.aggregate(searchPipeline).exec();
+    const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
 
-    // For complex queries, refine with OpenAI scoring
-    if (!isSimpleQuery && businesses.length > 0) {
-      const results = [];
-      const batchSize = 3;
-      for (let i = 0; i < businesses.length; i += batchSize) {
-        const batch = businesses.slice(i, i + batchSize);
-        const batchPromises = batch.map(async (business) => {
-          const cacheKey = `relevance:${query}:${business.businessId}`;
-          const cachedResult = relevanceCache.get(cacheKey);
-          if (cachedResult) return cachedResult;
-
-          try {
-            const truncatedBusiness = {
-              businessId: business.businessId,
-              name: business.name,
-              sector: business.sector,
-              price: business.price,
-              location: business.location,
-              description: business.description?.slice(0, 500)
-            };
-            const messageContent = `Query: ${query}\nListing: ${JSON.stringify(truncatedBusiness)}`;
-            const response = await openai.chat.completions.create({
-              model: 'gpt-4o-mini',
-              messages: [
-                {
-                  role: 'system',
-                  content: `Evaluate business listings for relevance to a user query. Return:
-                    - businessId: string
-                    - score: number (0-100)
-                    - reason: string
-                  Map terms:
-                    - "restaurants", "coffee shops" → sector: "Food"
-                    - "liquor store" → sector: "Retail"
-                    - "distressed" → distressed: true
-                    - "sba", "approved" → sbaPreApproved: true
-                    - Location (e.g., "California") → location.state
-                    - Price (e.g., "under 500k") → price <= 500000
-                  Prioritize exact matches for location and boolean fields (subtract 30 if location mismatch). Score >50 for clear matches. Return JSON only.`
-                },
-                { role: 'user', content: messageContent }
-              ],
-              response_format: { type: 'json_object' }
-            });
-            const result = JSON.parse(response.choices[0].message.content);
-            relevanceCache.set(cacheKey, result, 3600);
-            return result;
-          } catch (err) {
-            console.error('OpenAI error for', business.businessId, err.message);
-            return { businessId: business.businessId, score: business.score, reason: 'Failed to process' };
-          }
-        });
-        const batchResults = await Promise.all(batchPromises);
-        results.push(...batchResults);
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-
-      businesses = results
-        .filter(result => result.score > 50)
-        .map(result => {
-          const business = businesses.find(b => b.businessId === result.businessId);
-          return business ? { ...business, score: result.score } : null;
-        })
-        .filter(b => b)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 50);
-    }
-
-    relevanceCache.set(cacheKey, businesses, 3600);
-    console.log('Final listings:', businesses.length);
     res.status(200).json(businesses);
   } catch (error) {
     console.error('AI search error:', error);
