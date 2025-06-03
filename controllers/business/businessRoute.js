@@ -275,11 +275,11 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     const pipeline = [
       {
         $vectorSearch: {
-          index: 'vector_index',                 // Atlas Vector Search index
-          path:  'descriptionEmbedding',
+          index: 'vector_index',
+          path: 'descriptionEmbedding',
           queryVector,
-          limit: 100,                            // how many to return
-          numCandidates: 400,                    // 4×limit is a good default
+          limit: 20,            // ① smaller pool
+          numCandidates: 80,
           filter: {
             ...priceFilter,
             ...(location && { 'location.state': location }),
@@ -287,38 +287,30 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           }
         }
       },
-      { $addFields: { score: { $meta: 'vectorSearchScore' } } },
+    
+      /* ② keep only docs close to the top hit */
       {
-        $match: { 'location.state': new RegExp(location, 'i') }
-      },
-      { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 },
-      {
-        $project: {
-          businessId: 1,
-          name: 1,
-          sector: 1,
-          price: 1,
-          revenue: 1,
-          cashFlow: 1,
-          location: 1,
-          description: { $substr: ['$description', 0, 1000] },
-          scrapedData: { detailUrl: 1 },
-          sourceContent: {
-            financials: 1,
-            detailedInfo: 1,
-            content: { $substr: ['$sourceContent.content', 0, 1000] }
-          },
-          distressed: 1,
-          ownerAbsentee: 1,
-          sbaPreApproved: 1,
-          sellerFinancing: 1,
-          zeroDown: 1,
-          brickAndMortar: 1,
-          score: 1
+        $setWindowFields: {
+          sortBy: { score: -1 },
+          output: { bestScore: { $first: '$score' } }
         }
-      }
+      },
+      { $match: { $expr: { $gte: ['$score', { $multiply: ['$bestScore', 0.75] }] } } },
+    
+      /* ③ keyword sanity-check */
+      {
+        $match: {
+          $or: [
+            { name:        { $regex: terms.join('|'), $options: 'i' } },
+            { description: { $regex: terms.join('|'), $options: 'i' } }
+          ]
+        }
+      },
+    
+      { $project: { bestScore: 0 } },          // drop helper field
+      { $sort: { score: -1, _id: 1 } }
     ];
+    
 
     const businesses = await Business.aggregate(pipeline).exec();
     res.status(200).json(businesses);
