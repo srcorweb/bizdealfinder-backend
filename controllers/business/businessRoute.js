@@ -248,14 +248,14 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     // Build search clauses
     const mustClauses = [];
     const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 15 } } } },
-      { text: { query: terms.join(' '), path: 'description', score: { boost: { value: 5 } }, fuzzy: { maxEdits: 2 } } }
+      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
+      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
+      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
     ];
 
     if (location) {
-      mustClauses.push({
-        text: { query: location, path: 'location.state' }
+      shouldClauses.push({
+        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
       });
     }
 
@@ -291,7 +291,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       {
         $match: {
           ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters })
+          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
+          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
         }
       },
       {
@@ -300,7 +301,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 },
+      { $limit: 100 }, // Increased limit for broader results
       {
         $project: {
           businessId: 1,
