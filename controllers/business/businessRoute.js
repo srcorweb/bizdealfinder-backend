@@ -228,95 +228,158 @@ router.get('/search', authMiddleware, async (req, res) => {
   }
 });
 
+// AI-powered relevance search
 router.get('/ai-search', authMiddleware, async (req, res) => {
   try {
-    /* ────────── 1. basic input ────────── */
     const { q } = req.query;
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
-    const terms = query.split(' ').filter(t => t.length > 2);
+    const cacheKey = `search:${query}`;
+    const cachedResults = relevanceCache.get(cacheKey);
+    if (cachedResults) {
+      console.log(`Serving cached results for ${query}`);
+      return res.status(200).json(cachedResults);
+    }
 
-    /* ────────── 2. light NLP filters ────────── */
+    const terms = query.split(' ').filter(t => t.length > 2);
     let location = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
+      terms.splice(terms.indexOf('in'), terms.length);
     } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
       location = query;
     }
 
+    const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
+    const isSimpleQuery = (location && terms.length === 0) || (booleanTerms.some(term => query.includes(term)) && !locationMatch);
+
+    // Build filters
+    const booleanFilters = [];
+    if (query.includes('distressed')) booleanFilters.push({ distressed: true });
+    if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
+    if (query.includes('sba') || query.includes('approved')) booleanFilters.push({ sbaPreApproved: true });
+    if (query.includes('brick and mortar')) booleanFilters.push({ brickAndMortar: true });
+    if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
+    if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
+
     let priceFilter = {};
     const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
     if (priceMatch) {
-      const num  = parseFloat(priceMatch[1]);
-      const mult = priceMatch[2].toLowerCase() === 'm' ? 1_000_000 : 1_000;
-      priceFilter = { price: { $lte: num * mult } };
+      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
+      priceFilter = { price: { $lte: price } };
     }
 
-    const booleanFilters = [];
-    if (query.includes('distressed'))       booleanFilters.push({ distressed: true });
-    if (query.includes('owner absentee') ||
-        query.includes('absentee'))         booleanFilters.push({ ownerAbsentee: true });
-    if (query.includes('sba') ||
-        query.includes('approved'))         booleanFilters.push({ sbaPreApproved: true });
-    if (query.includes('brick and mortar')) booleanFilters.push({ brickAndMortar: true });
-    if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
-    if (query.includes('zero down'))        booleanFilters.push({ zeroDown: true });
-
-    /* ────────── 3. embed the query ────────── */
-    const { data } = await openai.embeddings.create({
-      model: 'text-embedding-ada-002',
-      input: query
-    });
-    const queryVector = data[0].embedding;
-
-    /* ────────── 4. vector search pipeline ────────── */
-    const pipeline = [
+    // Atlas Search pipeline
+    const searchPipeline = [
       {
-        $vectorSearch: {
-          index: 'vector_index',
-          path: 'descriptionEmbedding',
-          queryVector,
-          limit: 20,            // ① smaller pool
-          numCandidates: 80,
-          filter: {
-            ...priceFilter,
-            ...(location && { 'location.state': location }),
-            ...(booleanFilters.length && { $and: booleanFilters })
+        $search: {
+          index: 'business_search',
+          compound: {
+            should: [
+              { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
+              { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
+              { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+            ],
+            minimumShouldMatch: 1,
+            ...(location && {
+              must: [{ text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } } }]
+            })
           }
         }
       },
-    
-      /* ② keep only docs close to the top hit */
-      {
-        $setWindowFields: {
-          sortBy: { score: -1 },
-          output: { bestScore: { $first: '$score' } }
-        }
-      },
-      { $match: { $expr: { $gte: ['$score', { $multiply: ['$bestScore', 0.55] }] } } },
-    
-      /* ③ keyword sanity-check */
       {
         $match: {
-          $or: [
-            { name:        { $regex: terms.join('|'), $options: 'i' } },
-            { description: { $regex: terms.join('|'), $options: 'i' } }
-          ]
+          ...priceFilter,
+          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
+          ...(location && !isSimpleQuery && { 'location.state': { $regex: location, $options: 'i' } })
         }
       },
-    
-      { $project: { bestScore: 0 } },          // drop helper field
-      { $sort: { score: -1, _id: 1 } }
+      {
+        $addFields: {
+          score: { $meta: 'searchScore' }
+        }
+      },
+      { $sort: { score: -1, _id: 1 } },
+      { $limit: 100 }
     ];
-    
 
-    const businesses = await Business.aggregate(pipeline).exec();
+    let businesses = await Business.aggregate(searchPipeline).exec();
+    console.log('Fetched listings:', businesses.length);
+
+    // For complex queries, refine with OpenAI scoring
+    if (!isSimpleQuery && businesses.length > 0) {
+      const results = [];
+      const batchSize = 5;
+      for (let i = 0; i < businesses.length; i += batchSize) {
+        const batch = businesses.slice(i, i + batchSize);
+        const batchPromises = batch.map(async (business) => {
+          const cacheKey = `relevance:${query}:${business.businessId}`;
+          const cachedResult = relevanceCache.get(cacheKey);
+          if (cachedResult) return cachedResult;
+
+          try {
+            const truncatedBusiness = {
+              businessId: business.businessId,
+              name: business.name,
+              sector: business.sector,
+              price: business.price,
+              location: business.location,
+              description: business.description?.substring(0, 1000)
+            };
+            const messageContent = `Query: ${query}\nListing: ${JSON.stringify(truncatedBusiness)}`;
+            const response = await openai.chat.completions.create({
+              model: 'gpt-4o-mini',
+              messages: [
+                {
+                  role: 'system',
+                  content: `Evaluate business listings for relevance to a user query. Return:
+                    - businessId: string
+                    - score: number (0-100)
+                    - reason: string
+                  Map terms:
+                    - "restaurants", "coffee shops" → sector: "Food"
+                    - "liquor store" → sector: "Retail"
+                    - "distressed" → distressed: true
+                    - "sba", "approved" → sbaPreApproved: true
+                    - Location (e.g., "California") → location.state
+                    - Price (e.g., "under 500k") → price <= 500000
+                  Prioritize exact matches for location and boolean fields (subtract 30 if location mismatch). Score >50 for clear matches. Return JSON only.`
+                },
+                { role: 'user', content: messageContent }
+              ],
+              response_format: { type: 'json_object' }
+            });
+            const result = JSON.parse(response.choices[0].message.content);
+            relevanceCache.set(cacheKey, result);
+            return result;
+          } catch (error) {
+            console.error('OpenAI error for', business.businessId, error.message);
+            return { businessId: business.businessId, score: business.score, reason: 'Failed to process' };
+          }
+        });
+        const batchResults = await Promise.all(batchPromises);
+        results.push(...batchResults);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      businesses = results
+        .filter(result => result.score > 50)
+        .map(result => {
+          const business = businesses.find(b => b.businessId === result.businessId);
+          return business ? { ...business, score: result.score } : null;
+        })
+        .filter(b => b)
+        .sort((a, b) => b.score - a.score);
+    }
+
+    relevanceCache.set(cacheKey, businesses);
+    console.log('Final listings:', businesses.length);
     res.status(200).json(businesses);
-  } catch (err) {
-    console.error('AI-search error:', err);
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error('AI search error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
