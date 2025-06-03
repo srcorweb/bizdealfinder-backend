@@ -280,7 +280,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             should: [
               { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
               { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-              { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+              { text: { query: terms.join(' '), path: 'description' } }
             ],
             minimumShouldMatch: 1,
             ...(location && {
@@ -293,7 +293,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $match: {
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && !isSimpleQuery && { 'location.state': { $regex: location, $options: 'i' } })
+          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
         }
       },
       {
@@ -302,7 +302,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }
+      { $limit: isSimpleQuery ? 50 : 20 } // Fewer results for OpenAI scoring
     ];
 
     let businesses = await Business.aggregate(searchPipeline).exec();
@@ -311,7 +311,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     // For complex queries, refine with OpenAI scoring
     if (!isSimpleQuery && businesses.length > 0) {
       const results = [];
-      const batchSize = 5;
+      const batchSize = 3; // Smaller batch for speed
       for (let i = 0; i < businesses.length; i += batchSize) {
         const batch = businesses.slice(i, i + batchSize);
         const batchPromises = batch.map(async (business) => {
@@ -326,7 +326,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
               sector: business.sector,
               price: business.price,
               location: business.location,
-              description: business.description?.substring(0, 1000)
+              description: business.description?.substring(0, 500)
             };
             const messageContent = `Query: ${query}\nListing: ${JSON.stringify(truncatedBusiness)}`;
             const response = await openai.chat.completions.create({
@@ -352,7 +352,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
               response_format: { type: 'json_object' }
             });
             const result = JSON.parse(response.choices[0].message.content);
-            relevanceCache.set(cacheKey, result);
+            relevanceCache.set(cacheKey, result, 3600);
             return result;
           } catch (error) {
             console.error('OpenAI error for', business.businessId, error.message);
@@ -361,7 +361,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         });
         const batchResults = await Promise.all(batchPromises);
         results.push(...batchResults);
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500)); // Reduced delay
       }
 
       businesses = results
@@ -371,10 +371,11 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           return business ? { ...business, score: result.score } : null;
         })
         .filter(b => b)
-        .sort((a, b) => b.score - a.score);
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 50);
     }
 
-    relevanceCache.set(cacheKey, businesses);
+    relevanceCache.set(cacheKey, businesses, 3600);
     console.log('Final listings:', businesses.length);
     res.status(200).json(businesses);
   } catch (error) {
