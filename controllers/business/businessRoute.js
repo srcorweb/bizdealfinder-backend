@@ -253,9 +253,51 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     }
 
     const booleanTerms = ['distressed', 'owner absentee', 'absentee', 'sba', 'approved', 'brick and mortar', 'seller financing', 'zero down'];
-    const isSimpleQuery = (location && terms.length === 0) || (booleanTerms.some(term => query.includes(term)) && !locationMatch);
+    const isStateOnlyQuery = location && terms.length === 0 && !booleanTerms.some(term => query.includes(term));
+    const isSimpleQuery = isStateOnlyQuery || (booleanTerms.some(term => query.includes(term)) && !locationMatch);
 
-    // Build filters
+    // Handle state-only query
+    if (isStateOnlyQuery) {
+      const pipeline = [
+        {
+          $match: {
+            'location.state': { $regex: `^${location}$`, $options: 'i' }
+          }
+        },
+        {
+          $project: {
+            businessId: 1,
+            name: 1,
+            sector: 1,
+            price: 1,
+            revenue: 1,
+            cashFlow: 1,
+            location: 1,
+            description: { $substr: ['$description', 0, 1000] },
+            scrapedData: { detailUrl: 1 },
+            sourceContent: {
+              financials: 1,
+              detailedInfo: 1,
+              content: { $substr: ['$sourceContent.content', 0, 1000] }
+            },
+            distressed: 1,
+            ownerAbsentee: 1,
+            sbaPreApproved: 1,
+            sellerFinancing: 1,
+            zeroDown: 1,
+            brickAndMortar: 1,
+            score: 1
+          }
+        }
+      ];
+
+      const businesses = await Business.aggregate(pipeline).exec();
+      console.log('Fetched listings:', businesses.length);
+      relevanceCache.set(cacheKey, businesses, 3600);
+      return res.status(200).json(businesses);
+    }
+
+    // Build filters for other queries
     const booleanFilters = [];
     if (query.includes('distressed')) booleanFilters.push({ distressed: true });
     if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
@@ -293,7 +335,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $match: {
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
+          ...(location && !isSimpleQuery && { 'location.state': { $regex: location, $options: 'i' } })
         }
       },
       {
@@ -302,7 +344,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: isSimpleQuery ? 50 : 20 } // Fewer results for OpenAI scoring
+      { $limit: isSimpleQuery ? 50 : 20 }
     ];
 
     let businesses = await Business.aggregate(searchPipeline).exec();
@@ -311,7 +353,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     // For complex queries, refine with OpenAI scoring
     if (!isSimpleQuery && businesses.length > 0) {
       const results = [];
-      const batchSize = 3; // Smaller batch for speed
+      const batchSize = 3;
       for (let i = 0; i < businesses.length; i += batchSize) {
         const batch = businesses.slice(i, i + batchSize);
         const batchPromises = batch.map(async (business) => {
@@ -326,7 +368,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
               sector: business.sector,
               price: business.price,
               location: business.location,
-              description: business.description?.substring(0, 500)
+              description: business.description?.slice(0, 500)
             };
             const messageContent = `Query: ${query}\nListing: ${JSON.stringify(truncatedBusiness)}`;
             const response = await openai.chat.completions.create({
@@ -354,14 +396,14 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             const result = JSON.parse(response.choices[0].message.content);
             relevanceCache.set(cacheKey, result, 3600);
             return result;
-          } catch (error) {
-            console.error('OpenAI error for', business.businessId, error.message);
+          } catch (err) {
+            console.error('OpenAI error for', business.businessId, err.message);
             return { businessId: business.businessId, score: business.score, reason: 'Failed to process' };
           }
         });
         const batchResults = await Promise.all(batchPromises);
         results.push(...batchResults);
-        await new Promise(resolve => setTimeout(resolve, 500)); // Reduced delay
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       businesses = results
