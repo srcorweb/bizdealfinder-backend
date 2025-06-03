@@ -295,7 +295,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           output: { bestScore: { $first: '$score' } }
         }
       },
-      { $match: { $expr: { $gte: ['$score', { $multiply: ['$bestScore', 0.75] }] } } },
+      { $match: { $expr: { $gte: ['$score', { $multiply: ['$bestScore', 0.55] }] } } },
     
       /* ③ keyword sanity-check */
       {
