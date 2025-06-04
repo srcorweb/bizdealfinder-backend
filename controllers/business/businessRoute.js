@@ -237,7 +237,6 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     const query = q.toLowerCase().trim();
     const terms = query.split(' ').filter(t => t.length > 2);
     let location = '';
-    let city = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
@@ -246,56 +245,19 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       location = query;
     }
 
-    // Hierarchical location mapping
-    const locationMap = {
-      'los angeles': ['santa monica', 'beverly hills', 'west hollywood', 'culver city'],
-      // Add more mappings as needed, e.g., 'san francisco': ['oakland', 'berkeley']
-    };
-    let locationCities = [location];
-    if (locationMap[location]) {
-      city = location; // Treat the query location as the city
-      locationCities = [location, ...locationMap[location]];
-    }
-
-    // Build search clauses
     const mustClauses = [];
     const shouldClauses = [
-      {
-        text: {
-          query: terms.join(' '),
-          path: 'name',
-          score: { boost: { value: 20 } },
-          fuzzy: { maxEdits: 1 }
-        }
-      },
-      {
-        text: {
-          query: terms.join(' '),
-          path: 'description',
-          score: { boost: { value: 10 } },
-          fuzzy: { maxEdits: 1 }
-        }
-      },
-      {
-        text: {
-          query: terms.join(' '),
-          path: 'sector',
-          score: { boost: { value: 5 } }
-        }
-      }
+      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 20 } }, fuzzy: { maxEdits: 1 } } },
+      { text: { query: terms.join(' '), path: 'description', score: { boost: { value: 10 } }, fuzzy: { maxEdits: 1 } } }
     ];
 
     if (location) {
-      mustClauses.push({
-        text: {
-          query: locationCities.join(' '),
-          path: ['location.city', 'location.state'],
-          score: { boost: { value: 15 } }
-        }
-      });
+      mustClauses.push({ text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 15 } } } });
+    }
+    if (terms.length > 0) {
+      mustClauses.push({ text: { query: terms.join(' '), path: ['name', 'description'], fuzzy: { maxEdits: 1 } } });
     }
 
-    // Handle price range
     let priceFilter = {};
     const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
     if (priceMatch) {
@@ -303,7 +265,6 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       priceFilter = { price: { $lte: price } };
     }
 
-    // Handle boolean attributes
     const booleanFilters = [];
     if (query.includes('distressed')) booleanFilters.push({ distressed: true });
     if (query.includes('owner absentee') || query.includes('absentee')) booleanFilters.push({ ownerAbsentee: true });
@@ -312,7 +273,6 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
     if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
 
-    // Build aggregation pipeline
     const pipeline = [
       {
         $search: {
@@ -320,7 +280,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           compound: {
             must: mustClauses,
             should: shouldClauses,
-            minimumShouldMatch: 1
+            minimumShouldMatch: shouldClauses.length > 0 ? 1 : 0
           }
         }
       },
@@ -328,21 +288,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $match: {
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && {
-            $or: [
-              { 'location.state': { $regex: location, $options: 'i' } },
-              { 'location.city': { $in: locationCities.map(c => new RegExp(c, 'i')) } }
-            ]
-          })
+          ...(location && { $or: [{ 'location.state': { $regex: location, $options: 'i' } }, { 'location.city': { $regex: location, $options: 'i' } }] })
         }
       },
-      {
-        $addFields: {
-          score: { $meta: 'searchScore' }
-        }
-      },
+      { $addFields: { score: { $meta: 'searchScore' } } },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 50 }, // Reduced limit for relevance and performance
+      { $limit: 50 },
       {
         $project: {
           businessId: 1,
@@ -354,11 +305,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           location: 1,
           description: { $substr: ['$description', 0, 1000] },
           scrapedData: { detailUrl: 1 },
-          sourceContent: {
-            financials: 1,
-            detailedInfo: 1,
-            content: { $substr: ['$sourceContent.content', 0, 1000] }
-          },
+          sourceContent: { financials: 1, detailedInfo: 1, content: { $substr: ['$sourceContent.content', 0, 1000] } },
           distressed: 1,
           ownerAbsentee: 1,
           sbaPreApproved: 1,
@@ -370,9 +317,10 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       }
     ];
 
-    console.log('Collection name:', Business.collection.collectionName); // Confirm collection
+    console.log('Collection name:', Business.collection.collectionName);
     const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
+    console.log('Results:', JSON.stringify(businesses, null, 2));
 
     res.status(200).json(businesses);
   } catch (error) {
