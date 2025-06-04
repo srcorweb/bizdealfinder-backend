@@ -237,6 +237,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     const query = q.toLowerCase().trim();
     const terms = query.split(' ').filter(t => t.length > 2);
     let location = '';
+    let city = '';
     const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
@@ -245,17 +246,52 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       location = query;
     }
 
+    // Hierarchical location mapping
+    const locationMap = {
+      'los angeles': ['santa monica', 'beverly hills', 'west hollywood', 'culver city'],
+      // Add more mappings as needed, e.g., 'san francisco': ['oakland', 'berkeley']
+    };
+    let locationCities = [location];
+    if (locationMap[location]) {
+      city = location; // Treat the query location as the city
+      locationCities = [location, ...locationMap[location]];
+    }
+
     // Build search clauses
     const mustClauses = [];
     const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
+      {
+        text: {
+          query: terms.join(' '),
+          path: 'name',
+          score: { boost: { value: 20 } },
+          fuzzy: { maxEdits: 1 }
+        }
+      },
+      {
+        text: {
+          query: terms.join(' '),
+          path: 'description',
+          score: { boost: { value: 10 } },
+          fuzzy: { maxEdits: 1 }
+        }
+      },
+      {
+        text: {
+          query: terms.join(' '),
+          path: 'sector',
+          score: { boost: { value: 5 } }
+        }
+      }
     ];
 
     if (location) {
-      shouldClauses.push({
-        text: { query: location, path: ['location.state', 'location.city'], score: { boost: { value: 5 } } }
+      mustClauses.push({
+        text: {
+          query: locationCities.join(' '),
+          path: ['location.city', 'location.state'],
+          score: { boost: { value: 15 } }
+        }
       });
     }
 
@@ -292,7 +328,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         $match: {
           ...priceFilter,
           ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
+          ...(location && {
+            $or: [
+              { 'location.state': { $regex: location, $options: 'i' } },
+              { 'location.city': { $in: locationCities.map(c => new RegExp(c, 'i')) } }
+            ]
+          })
         }
       },
       {
@@ -301,7 +342,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         }
       },
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }, // Increased limit for broader results
+      { $limit: 50 }, // Reduced limit for relevance and performance
       {
         $project: {
           businessId: 1,
@@ -329,6 +370,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       }
     ];
 
+    console.log('Collection name:', Business.collection.collectionName); // Confirm collection
     const businesses = await Business.aggregate(pipeline).exec();
     console.log('Fetched listings:', businesses.length);
 
