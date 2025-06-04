@@ -112,7 +112,7 @@ const scrapeBusinesses = async () => {
     For BizBuySell, prepend "https://www.bizbuysell.com" to relative URLs. For DealStream, prepend "https://dealstream.com". For Sunbelt Network, prepend "https://www.sunbeltnetwork.com". For BusinessForSale, prepend "https://us.businessesforsale.com". For Flippa, prepend "https://flippa.com". Discard non-USA listings for DealStream, Sunbelt Network, BusinessForSale, and Flippa by checking if location includes a US state or "United States". Use defaults: 0 for numbers, false for booleans, "Unknown" for strings, "Services" for sector only as a last resort. Return JSON only, no markdown. Log the extracted JSON for debugging.`;
 
     const allListings = [];
-    const maxPages = 20;
+    const maxPages = 1;
     const maxRetries = 1;
 
     // Array of site scraping functions to process sequentially
