@@ -235,23 +235,112 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (!q) return res.status(400).json({ message: 'Query required' });
 
     const query = q.toLowerCase().trim();
-    const terms = query.split(' ').filter(t => t.length > 2);
+    const stopWords = new Set(['in', 'at', 'on', 'the', 'a', 'an', 'and', 'or', 'but', 'for', 'with', 'under', 'over', 'near']);
+    const allTerms = query.split(/\s+/).filter(term => term.length > 1);
+    const meaningfulTerms = allTerms.filter(term => !stopWords.has(term) && term.length > 2);
+
     let location = '';
-    const locationMatch = query.match(/in\s+([a-z\s]+)$/i);
+    let searchTerms = [...meaningfulTerms];
+    const locationMatch = query.match(/\bin\s+([a-z\s]+)$/i);
     if (locationMatch) {
       location = locationMatch[1].trim();
-      terms.splice(terms.indexOf('in'), terms.length);
-    } else if (['texas', 'california', 'new york', 'florida'].includes(query)) {
-      location = query;
+      const locationTerms = location.split(/\s+/);
+      searchTerms = searchTerms.filter(term => !locationTerms.includes(term));
+      const inIndex = allTerms.indexOf('in');
+      if (inIndex > -1) {
+        searchTerms = searchTerms.filter((_, index) => index !== inIndex);
+      }
+    } else {
+      const stateNames = ['texas', 'california', 'new york', 'florida', 'illinois', 'pennsylvania', 'ohio', 'georgia', 'north carolina', 'michigan'];
+      if (stateNames.includes(query)) {
+        location = query;
+        searchTerms = [];
+      }
     }
 
-    // Build search clauses
+
     const mustClauses = [];
-    const shouldClauses = [
-      { text: { query: terms.join(' '), path: 'name', score: { boost: { value: 15 } }, fuzzy: { maxEdits: 2 } } },
-      { text: { query: terms.join(' '), path: 'sector', score: { boost: { value: 10 } } } },
-      { text: { query: terms.join(' '), path: 'description', fuzzy: { maxEdits: 2 } } }
-    ];
+    const shouldClauses = [];
+
+    if (searchTerms.length > 0) {
+      const mainQuery = searchTerms.join(' ');
+      shouldClauses.push({
+        phrase: {
+          query: mainQuery,
+          path: 'name',
+          score: { boost: { value: 20 } }
+        }
+      });
+
+      shouldClauses.push({
+        phrase: {
+          query: mainQuery,
+          path: 'sector',
+          score: { boost: { value: 15 } }
+        }
+      });
+
+      for (const term of searchTerms) {
+        shouldClauses.push({
+          text: {
+            query: term,
+            path: 'name',
+            score: { boost: { value: 12 } },
+            fuzzy: { maxEdits: 1 }
+          }
+        });
+      }
+
+      for (const term of searchTerms) {
+        shouldClauses.push({
+          text: {
+            query: term,
+            path: 'sector',
+            score: { boost: { value: 8 } },
+            fuzzy: { maxEdits: 1 }
+          }
+        });
+      }
+
+      shouldClauses.push({
+        text: {
+          query: mainQuery,
+          path: 'description',
+          score: { boost: { value: 3 } },
+          fuzzy: { maxEdits: 1 }
+        }
+      });
+
+      if (searchTerms.length === 1) {
+        mustClauses.push({
+          compound: {
+            should: [
+              { text: { query: searchTerms[0], path: 'name', fuzzy: { maxEdits: 1 } } },
+              { text: { query: searchTerms[0], path: 'sector', fuzzy: { maxEdits: 1 } } },
+              { text: { query: searchTerms[0], path: 'description' } }
+            ],
+            minimumShouldMatch: 1
+          }
+        });
+      } else {
+        const minMatches = Math.max(1, Math.ceil(searchTerms.length * 0.6));
+        mustClauses.push({
+          compound: {
+            should: searchTerms.map(term => ({
+              compound: {
+                should: [
+                  { text: { query: term, path: 'name', fuzzy: { maxEdits: 1 } } },
+                  { text: { query: term, path: 'sector', fuzzy: { maxEdits: 1 } } },
+                  { text: { query: term, path: 'description' } }
+                ],
+                minimumShouldMatch: 1
+              }
+            })),
+            minimumShouldMatch: minMatches
+          }
+        });
+      }
+    }
 
     if (location) {
       shouldClauses.push({
@@ -276,32 +365,49 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     if (query.includes('seller financing')) booleanFilters.push({ sellerFinancing: true });
     if (query.includes('zero down')) booleanFilters.push({ zeroDown: true });
 
+    const compoundQuery = {
+      must: mustClauses,
+      should: shouldClauses,
+      minimumShouldMatch: shouldClauses.length > 0 ? 1 : 0
+    };
+
+    if (searchTerms.length === 0 && !location && booleanFilters.length === 0 && !priceMatch) {
+      return res.status(400).json({ message: 'Please provide more specific search terms' });
+    }
+
     // Build aggregation pipeline
     const pipeline = [
       {
         $search: {
           index: 'business_search',
-          compound: {
-            must: mustClauses,
-            should: shouldClauses,
-            minimumShouldMatch: 1
-          }
-        }
-      },
-      {
-        $match: {
-          ...priceFilter,
-          ...(booleanFilters.length > 0 && { $and: booleanFilters }),
-          ...(location && { 'location.state': { $regex: location, $options: 'i' } })
+          compound: compoundQuery
         }
       },
       {
         $addFields: {
           score: { $meta: 'searchScore' }
         }
-      },
+      }
+    ];
+
+    const matchFilters = {
+      ...priceFilter,
+      ...(booleanFilters.length > 0 && { $and: booleanFilters }),
+      ...(location && { 
+        $or: [
+          { 'location.state': { $regex: location, $options: 'i' } },
+          { 'location.city': { $regex: location, $options: 'i' } }
+        ]
+      })
+    };
+
+    if (Object.keys(matchFilters).length > 0) {
+      pipeline.push({ $match: matchFilters });
+    }
+
+    pipeline.push(
       { $sort: { score: -1, _id: 1 } },
-      { $limit: 100 }, // Increased limit for broader results
+      { $limit: searchTerms.length > 0 ? 50 : 100 },
       {
         $project: {
           businessId: 1,
@@ -327,12 +433,23 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           score: 1
         }
       }
-    ];
+    );
 
     const businesses = await Business.aggregate(pipeline).exec();
-    console.log('Fetched listings:', businesses.length);
+    let filteredBusinesses = businesses;
+    if (searchTerms.length > 0) {
+      const minScore = businesses.length > 0 ? businesses[0].score * 0.3 : 0;
+      filteredBusinesses = businesses.filter(business => business.score >= minScore);
 
-    res.status(200).json(businesses);
+      if (filteredBusinesses.length < 5 && businesses.length >= 5) {
+        const relaxedMinScore = businesses[0].score * 0.15;
+        filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
+      }
+    }
+
+    console.log(`Fetched ${businesses.length} listings, filtered to ${filteredBusinesses.length}`);
+
+    res.status(200).json(filteredBusinesses);
   } catch (error) {
     console.error('AI search error:', error);
     res.status(500).json({ error: error.message });
