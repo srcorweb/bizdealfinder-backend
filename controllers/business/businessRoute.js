@@ -232,82 +232,147 @@ router.get('/search', authMiddleware, async (req, res) => {
 router.get('/ai-search', authMiddleware, async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q) return res.status(400).json({ message: 'Query required' });
+    if (!q) {
+      return res.status(400).json({ message: 'Query required' });
+    }
 
-    const query = q.toLowerCase().trim();
+    const originalQuery = q;
+    let query = q.toLowerCase().trim();
     const booleanFilters = [];
-    let cleanedQuery = query;
 
-    if (query.includes('sba preapproved') || query.includes('sba approved') || (query.includes('sba') && query.includes('preapproved')) || (query.includes('sba') && query.includes('approved'))) {
+    if (query.includes('sba preapproved') || query.includes('sba approved') ||
+        (query.includes('sba') && (query.includes('preapproved') || query.includes('approved')))) {
       booleanFilters.push({ sbaPreApproved: true });
-      cleanedQuery = cleanedQuery.replace(/\b(sba\s*(preapproved|approved)|preapproved|approved)\b/gi, '').trim();
+      query = query.replace(/\b(sba\s*(preapproved|approved)|preapproved|approved)\b/gi, '').trim();
     }
     if (query.includes('distressed')) {
       booleanFilters.push({ distressed: true });
-      cleanedQuery = cleanedQuery.replace(/\bdistressed\b/gi, '').trim();
+      query = query.replace(/\bdistressed\b/gi, '').trim();
     }
     if (query.includes('owner absentee') || query.includes('absentee')) {
       booleanFilters.push({ ownerAbsentee: true });
-      cleanedQuery = cleanedQuery.replace(/\b(owner\s*absentee|absentee)\b/gi, '').trim();
+      query = query.replace(/\b(owner\s*absentee|absentee)\b/gi, '').trim();
     }
     if (query.includes('brick and mortar')) {
       booleanFilters.push({ brickAndMortar: true });
-      cleanedQuery = cleanedQuery.replace(/\bbrick\s*and\s*mortar\b/gi, '').trim();
+      query = query.replace(/\bbrick\s*and\s*mortar\b/gi, '').trim();
     }
     if (query.includes('seller financing')) {
       booleanFilters.push({ sellerFinancing: true });
-      cleanedQuery = cleanedQuery.replace(/\bseller\s*financing\b/gi, '').trim();
+      query = query.replace(/\bseller\s*financing\b/gi, '').trim();
     }
     if (query.includes('zero down')) {
       booleanFilters.push({ zeroDown: true });
-      cleanedQuery = cleanedQuery.replace(/\bzero\s*down\s*(businesses?|deals?|properties?)?\b/gi, '').trim();
+      query = query.replace(/\bzero\s*down\s*(businesses?|deals?|properties?)?\b/gi, '').trim();
     }
 
     if (query.includes('ecom store') || query.includes('ecommerce store') || query.includes('online store')) {
       booleanFilters.push({ brickAndMortar: { $ne: true } });
-      cleanedQuery = cleanedQuery.replace(/\b(ecom|ecommerce|online)\s*store\b/gi, 'store').trim();
+      query = query.replace(/\b(ecom|ecommerce|online)\s*store\b/gi, 'store').trim();
     }
 
-    cleanedQuery = cleanedQuery.replace(/\b(low\s*cost|high\s*cost|cheap|expensive|affordable|budget|premium)\s*/gi, '').trim();
+    let priceFilter = {};
 
-    cleanedQuery = cleanedQuery.replace(/\b(businesses?|companies?|deals?|properties?|listings?|opportunities?)\b/gi, '').trim();
+    const parsePrice = (value, unit) => {
+      const numValue = parseFloat(value);
+      if (unit === 'm') return numValue * 1000000;
+      if (unit === 'k') return numValue * 1000;
+      return numValue >= 1000 ? numValue : numValue * 1000;
+    };
 
-    cleanedQuery = cleanedQuery.replace(/\s+/g, ' ').trim();
+    const maxPricePatterns = [
+      /under\s+(\d+\.?\d*)\s*(k|m)\b/i,
+      /under\s+\$(\d+\.?\d*)\s*(k|m)\b/i,
+      /under\s+\$?(\d{4,})\b/i,
+      /below\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i,
+      /less\s+than\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i
+    ];
 
-    const stopWords = new Set(['in', 'at', 'on', 'the', 'a', 'an', 'and', 'or', 'but', 'for', 'with', 'under', 'over', 'near']);
-    const allTerms = cleanedQuery.split(/\s+/).filter(term => term.length > 1);
-    const meaningfulTerms = allTerms.filter(term => !stopWords.has(term) && term.length > 2);
+    for (const pattern of maxPricePatterns) {
+      const match = query.match(pattern);
+      if (match) {
+        const price = parsePrice(match[1], match[2]);
+        priceFilter = { price: { $lte: price } };
+        query = query.replace(pattern, '').replace(/\s+/g, ' ').trim();
+        break;
+      }
+    }
 
-    let location = '';
-    let searchTerms = [...meaningfulTerms];
+    if (!priceFilter.price) {
+      const minPricePatterns = [
+        /over\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i,
+        /above\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i,
+        /more\s+than\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i
+      ];
+
+      for (const pattern of minPricePatterns) {
+        const match = query.match(pattern);
+        if (match) {
+          const price = parsePrice(match[1], match[2]);
+          priceFilter = { price: { $gte: price } };
+          query = query.replace(pattern, '').replace(/\s+/g, ' ').trim();
+          break;
+        }
+      }
+    }
+
+    if (!priceFilter.price) {
+      const rangeMatch = query.match(/between\s+\$?(\d+\.?\d*)\s*(k|m)?\s+and\s+\$?(\d+\.?\d*)\s*(k|m)?\b/i);
+      if (rangeMatch) {
+        const minPrice = parsePrice(rangeMatch[1], rangeMatch[2]);
+        const maxPrice = parsePrice(rangeMatch[3], rangeMatch[4]);
+        priceFilter = { price: { $gte: minPrice, $lte: maxPrice } };
+        query = query.replace(rangeMatch[0], '').replace(/\s+/g, ' ').trim();
+        console.log(`Price range filter: $${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}`);
+      }
+    }
+
+    query = query.replace(/\blow\s*cost\s*/gi, '').trim();
+    query = query.replace(/\b(high\s*cost|cheap|expensive|affordable|budget|premium)\s*/gi, '').trim();
+
+    query = query.replace(/\b(businesses?|companies?|deals?|properties?|listings?|opportunities?)\b/gi, '').trim();
+
+    query = query.replace(/\s+/g, ' ').trim();
     const majorCities = [
-      'new york', 'los angeles', 'chicago', 'houston', 'phoenix', 'philadelphia', 'san antonio', 'san diego', 'dallas', 'san jose',
-      'austin', 'jacksonville', 'fort worth', 'columbus', 'charlotte', 'san francisco', 'indianapolis', 'seattle', 'denver', 'washington',
-      'boston', 'el paso', 'nashville', 'detroit', 'oklahoma city', 'portland', 'las vegas', 'memphis', 'louisville', 'baltimore',
-      'milwaukee', 'albuquerque', 'tucson', 'fresno', 'sacramento', 'kansas city', 'mesa', 'atlanta', 'omaha', 'colorado springs',
-      'raleigh', 'miami', 'oakland', 'minneapolis', 'tulsa', 'cleveland', 'wichita', 'new orleans', 'arlington', 'bakersfield',
-      'tampa', 'honolulu', 'anaheim', 'aurora', 'santa ana', 'st louis', 'riverside', 'corpus christi', 'lexington', 'pittsburgh',
-      'anchorage', 'stockton', 'cincinnati', 'st paul', 'toledo', 'greensboro', 'newark', 'plano', 'henderson', 'lincoln',
-      'buffalo', 'jersey city', 'chula vista', 'fort wayne', 'orlando', 'st petersburg', 'chandler', 'laredo', 'norfolk', 'durham',
-      'madison', 'lubbock', 'irvine', 'winston salem', 'glendale', 'garland', 'hialeah', 'reno', 'chesapeake', 'gilbert',
-      'baton rouge', 'irving', 'scottsdale', 'north las vegas', 'fremont', 'boise', 'richmond', 'san bernardino', 'birmingham', 'spokane',
-      'freedom'
+      'new york', 'los angeles', 'chicago', 'houston', 'phoenix', 'philadelphia', 
+      'san antonio', 'san diego', 'dallas', 'san jose', 'austin', 'jacksonville', 
+      'fort worth', 'columbus', 'charlotte', 'san francisco', 'indianapolis', 
+      'seattle', 'denver', 'washington', 'boston', 'el paso', 'nashville', 
+      'detroit', 'oklahoma city', 'portland', 'las vegas', 'memphis', 'louisville', 
+      'baltimore', 'milwaukee', 'albuquerque', 'tucson', 'fresno', 'sacramento', 
+      'kansas city', 'mesa', 'atlanta', 'omaha', 'colorado springs', 'raleigh', 
+      'miami', 'oakland', 'minneapolis', 'tulsa', 'cleveland', 'wichita', 
+      'new orleans', 'arlington', 'bakersfield', 'tampa', 'honolulu', 'anaheim', 
+      'aurora', 'santa ana', 'st louis', 'riverside', 'corpus christi', 
+      'lexington', 'pittsburgh', 'anchorage', 'stockton', 'cincinnati', 'st paul', 
+      'toledo', 'greensboro', 'newark', 'plano', 'henderson', 'lincoln', 'buffalo', 
+      'jersey city', 'chula vista', 'fort wayne', 'orlando', 'st petersburg', 
+      'chandler', 'laredo', 'norfolk', 'durham', 'madison', 'lubbock', 'irvine', 
+      'winston salem', 'glendale', 'garland', 'hialeah', 'reno', 'chesapeake', 
+      'gilbert', 'baton rouge', 'irving', 'scottsdale', 'north las vegas', 
+      'fremont', 'boise', 'richmond', 'san bernardino', 'birmingham', 'spokane', 
+      'warren'
     ];
 
     const stateNames = [
-      'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware', 'florida', 'georgia', 
-      'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 
-      'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 
-      'new jersey', 'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 
-      'pennsylvania', 'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 
-      'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming'
+      'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 
+      'connecticut', 'delaware', 'florida', 'georgia', 'hawaii', 'idaho', 
+      'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 
+      'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi', 
+      'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 
+      'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio', 
+      'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina', 
+      'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia', 
+      'washington', 'west virginia', 'wisconsin', 'wyoming'
     ];
 
-    const queryWords = cleanedQuery.toLowerCase().split(/\s+/);
-    let cityStateFound = false;
-    let detectedCity = '';
-    let detectedState = '';
+    let location = null;
+    let detectedCity = null;
+    let detectedState = null;
+    let searchTerms = query.split(/\s+/).filter(term => term.length > 1);
 
+    const queryWords = query.split(/\s+/);
+    let cityStateFound = false;
     for (let i = 0; i < queryWords.length - 1; i++) {
       const potentialCity = queryWords[i];
       const potentialState = queryWords[i + 1];
@@ -317,8 +382,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         detectedState = potentialState;
         location = `${potentialCity}, ${potentialState}`;
 
-        searchTerms = searchTerms.filter(term => 
-          term.toLowerCase() !== potentialCity && term.toLowerCase() !== potentialState
+        searchTerms = searchTerms.filter(term =>
+          term !== potentialCity && term !== potentialState
         );
         cityStateFound = true;
         break;
@@ -326,32 +391,9 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     }
 
     if (!cityStateFound) {
-      for (const city of majorCities) {
-        if (city.includes(' ')) {
-          const cityWords = city.split(' ');
-          for (const state of stateNames) {
-            const pattern = new RegExp(`\\b${city}\\s+${state}\\b`, 'i');
-            if (cleanedQuery.match(pattern)) {
-              detectedCity = city;
-              detectedState = state;
-              location = `${city}, ${state}`;
-              cityWords.forEach(cityWord => {
-                searchTerms = searchTerms.filter(term => term.toLowerCase() !== cityWord.toLowerCase());
-              });
-              searchTerms = searchTerms.filter(term => term.toLowerCase() !== state.toLowerCase());
-              cityStateFound = true;
-              break;
-            }
-          }
-          if (cityStateFound) break;
-        }
-      }
-    }
-
-    if (!cityStateFound) {
-      const locationMatch = cleanedQuery.match(/\bin\s+([a-z\s]+)$/i);
+      const locationMatch = query.match(/\bin\s+([a-z\s]+)$/i);
       if (locationMatch) {
-        const locationStr = locationMatch[1].trim().toLowerCase();
+        const locationStr = locationMatch[1].trim();
 
         if (majorCities.includes(locationStr)) {
           detectedCity = locationStr;
@@ -359,150 +401,126 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         } else if (stateNames.includes(locationStr)) {
           detectedState = locationStr;
           location = locationStr;
-        } else {
-          location = locationStr;
         }
 
-        const locationTerms = locationStr.split(/\s+/);
-        searchTerms = searchTerms.filter(term => !locationTerms.includes(term.toLowerCase()));
-        searchTerms = searchTerms.filter(term => term.toLowerCase() !== 'in');
+        if (location) {
+          const locationTerms = locationStr.split(/\s+/);
+          searchTerms = searchTerms.filter(term =>
+            !locationTerms.includes(term) && term !== 'in'
+          );
+        }
       }
     }
 
     if (!location) {
-      const queryLower = cleanedQuery.toLowerCase();
-      if (majorCities.includes(queryLower)) {
-        detectedCity = queryLower;
-        location = cleanedQuery;
-        searchTerms = [];
-      } else if (stateNames.includes(queryLower)) {
-        detectedState = queryLower;
-        location = cleanedQuery;
-        searchTerms = [];
-      }
-    }
-
-    if (!location && searchTerms.length > 0) {
-      for (const term of searchTerms) {
-        if (majorCities.includes(term.toLowerCase())) {
-          detectedCity = term.toLowerCase();
-          location = term.toLowerCase();
-          searchTerms = searchTerms.filter(t => t.toLowerCase() !== term.toLowerCase());
+      for (const term of [...searchTerms]) {
+        if (majorCities.includes(term)) {
+          detectedCity = term;
+          location = term;
+          searchTerms = searchTerms.filter(t => t !== term);
           break;
-        } else if (stateNames.includes(term.toLowerCase())) {
-          detectedState = term.toLowerCase();
-          location = term.toLowerCase();
-          searchTerms = searchTerms.filter(t => t.toLowerCase() !== term.toLowerCase());
+        } else if (stateNames.includes(term)) {
+          detectedState = term;
+          location = term;
+          searchTerms = searchTerms.filter(t => t !== term);
           break;
         }
       }
     }
 
-    const mustClauses = [];
-    const shouldClauses = [];
-    const isLocationOnlySearch = searchTerms.length === 0 && location;
+    const stopWords = new Set(['in', 'at', 'on', 'the', 'a', 'an', 'and', 'or', 'but', 'for', 'with', 'under', 'over', 'near']);
+    searchTerms = searchTerms.filter(term => 
+      !stopWords.has(term) && term.length > 2
+    );
 
-    if (searchTerms.length > 0) {
-      const mainQuery = searchTerms.join(' ');
+    let queryType = 'empty';
+    if (searchTerms.length > 0) queryType = 'text';
+    else if (location) queryType = 'location';
+    else if (booleanFilters.length > 0) queryType = 'boolean';
+    else if (Object.keys(priceFilter).length > 0) queryType = 'price';
 
-      shouldClauses.push({
-        phrase: {
-          query: mainQuery,
-          path: 'name',
-          score: { boost: { value: 20 } }
-        }
-      });
-
-      shouldClauses.push({
-        phrase: {
-          query: mainQuery,
-          path: 'sector',
-          score: { boost: { value: 15 } }
-        }
-      });
-
-      for (const term of searchTerms) {
-        shouldClauses.push({
-          text: {
-            query: term,
-            path: 'name',
-            score: { boost: { value: 12 } },
-            fuzzy: { maxEdits: 1 }
-          }
-        });
-      }
-
-      for (const term of searchTerms) {
-        shouldClauses.push({
-          text: {
-            query: term,
-            path: 'sector',
-            score: { boost: { value: 8 } },
-            fuzzy: { maxEdits: 1 }
-          }
-        });
-      }
-
-      shouldClauses.push({
-        text: {
-          query: mainQuery,
-          path: 'description',
-          score: { boost: { value: 3 } },
-          fuzzy: { maxEdits: 1 }
-        }
-      });
-
-      if (searchTerms.length === 1) {
-        mustClauses.push({
-          compound: {
-            should: [
-              { text: { query: searchTerms[0], path: 'name', fuzzy: { maxEdits: 1 } } },
-              { text: { query: searchTerms[0], path: 'sector', fuzzy: { maxEdits: 1 } } },
-              { text: { query: searchTerms[0], path: 'description' } }
-            ],
-            minimumShouldMatch: 1
-          }
-        });
-      } else {
-        const minMatches = Math.max(1, Math.ceil(searchTerms.length * 0.6));
-        mustClauses.push({
-          compound: {
-            should: searchTerms.map(term => ({
-              compound: {
-                should: [
-                  { text: { query: term, path: 'name', fuzzy: { maxEdits: 1 } } },
-                  { text: { query: term, path: 'sector', fuzzy: { maxEdits: 1 } } },
-                  { text: { query: term, path: 'description' } }
-                ],
-                minimumShouldMatch: 1
-              }
-            })),
-            minimumShouldMatch: minMatches
-          }
-        });
-      }
+    if (queryType === 'empty') {
+      return res.status(400).json({ message: 'Please provide more specific search terms' });
     }
 
-    let priceFilter = {};
-    const priceMatch = query.match(/under\s+(\d+\.?\d*)\s*(k|m)/i);
-    if (priceMatch) {
-      const price = parseFloat(priceMatch[1]) * (priceMatch[2].toLowerCase() === 'm' ? 1000000 : 1000);
-      priceFilter = { price: { $lte: price } };
+    const matchFilters = {};
+
+    if (Object.keys(priceFilter).length > 0) {
+      Object.assign(matchFilters, priceFilter);
+    }
+
+    for (const filter of booleanFilters) {
+      Object.assign(matchFilters, filter);
+    }
+
+    if (location) {
+      const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      if (detectedCity && detectedState) {
+        matchFilters.$and = [
+          { 'location.city': { $regex: new RegExp('^' + escapeRegex(detectedCity) + '$', 'i') } },
+          { 'location.state': { $regex: new RegExp('^' + escapeRegex(detectedState) + '$', 'i') } }
+        ];
+      } else if (detectedCity) {
+        matchFilters['location.city'] = { $regex: new RegExp('^' + escapeRegex(detectedCity) + '$', 'i') };
+      } else if (detectedState) {
+        matchFilters['location.state'] = { $regex: new RegExp('^' + escapeRegex(detectedState) + '$', 'i') };
+      }
     }
 
     const pipeline = [];
+    let hasSearchScore = false;
 
-    if (shouldClauses.length > 0 || mustClauses.length > 0) {
-      const compoundQuery = {
-        must: mustClauses,
-        should: shouldClauses,
-        minimumShouldMatch: shouldClauses.length > 0 ? 1 : 0
-      };
+    if (queryType === 'text') {
+      const searchQueries = [];
+      const mainQuery = searchTerms.join(' ');
+
+      for (const term of searchTerms) {
+        searchQueries.push({
+          text: {
+            query: term,
+            path: 'name',
+            fuzzy: { maxEdits: 1 },
+            score: { boost: { value: 10 } }
+          }
+        });
+
+        searchQueries.push({
+          text: {
+            query: term,
+            path: 'sector',
+            fuzzy: { maxEdits: 1 },
+            score: { boost: { value: 8 } }
+          }
+        });
+
+        searchQueries.push({
+          text: {
+            query: term,
+            path: 'description',
+            fuzzy: { maxEdits: 1 },
+            score: { boost: { value: 3 } }
+          }
+        });
+      }
+
+      if (searchTerms.length > 1) {
+        searchQueries.push({
+          text: {
+            query: mainQuery,
+            path: ['name', 'sector'],
+            score: { boost: { value: 15 } }
+          }
+        });
+      }
 
       pipeline.push({
         $search: {
           index: 'business_search',
-          compound: compoundQuery
+          compound: {
+            should: searchQueries,
+            minimumShouldMatch: Math.max(1, Math.floor(searchTerms.length * 0.5))
+          }
         }
       });
       pipeline.push({
@@ -510,128 +528,79 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           score: { $meta: 'searchScore' }
         }
       });
-    }
 
-    const matchFilters = {
-      ...priceFilter
-    };
-
-    if (booleanFilters.length > 0) {
-      for (const filter of booleanFilters) {
-        Object.assign(matchFilters, filter);
-      }
-    }
-
-    if (location) {
-      const locationFilters = [];
-
-      if (detectedCity && detectedState) {
-        locationFilters.push({
-          $and: [
-            { 'location.city': { $regex: new RegExp('^' + detectedCity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') } },
-            { 'location.state': { $regex: new RegExp('^' + detectedState.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') } }
-          ]
-        });
-      } else if (detectedCity) {
-        locationFilters.push({
-          'location.city': { $regex: new RegExp('^' + detectedCity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
-        });
-      } else if (detectedState) {
-        locationFilters.push({
-          'location.state': { $regex: new RegExp('^' + detectedState.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i') }
-        });
-      } else {
-        const locationParts = location.split(',').map(part => part.trim());
-        if (locationParts.length === 2) {
-          locationFilters.push({
-            $and: [
-              { 'location.city': { $regex: new RegExp(locationParts[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } },
-              { 'location.state': { $regex: new RegExp(locationParts[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } }
-            ]
-          });
-        } else {
-          locationFilters.push({
-            $or: [
-              { 'location.state': { $regex: new RegExp(location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } },
-              { 'location.city': { $regex: new RegExp(location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } }
-            ]
-          });
-        }
-      }
-
-      if (locationFilters.length > 0) {
-        if (locationFilters.length === 1) {
-          Object.assign(matchFilters, locationFilters[0]);
-        } else {
-          matchFilters.$or = locationFilters;
-        }
-      }
-    }
-
-    if (searchTerms.length === 0 && !location && booleanFilters.length === 0 && !priceMatch) {
-      return res.status(400).json({ message: 'Please provide more specific search terms' });
+      hasSearchScore = true;
     }
 
     if (Object.keys(matchFilters).length > 0) {
       pipeline.push({ $match: matchFilters });
     }
-    if (shouldClauses.length > 0 || mustClauses.length > 0) {
+    if (hasSearchScore) {
       pipeline.push({ $sort: { score: -1, _id: 1 } });
     } else {
       pipeline.push({ $sort: { _id: 1 } });
     }
 
-    pipeline.push(
-      { 
-        $limit: isLocationOnlySearch ? 500 : (searchTerms.length > 0 ? 50 : 200)
-      },
-      {
-        $project: {
-          businessId: 1,
-          name: 1,
-          sector: 1,
-          price: 1,
-          revenue: 1,
-          cashFlow: 1,
-          location: 1,
-          description: { $substr: ['$description', 0, 1000] },
-          scrapedData: { detailUrl: 1 },
-          sourceContent: {
-            financials: 1,
-            detailedInfo: 1,
-            content: { $substr: ['$sourceContent.content', 0, 1000] }
-          },
-          distressed: 1,
-          ownerAbsentee: 1,
-          sbaPreApproved: 1,
-          sellerFinancing: 1,
-          zeroDown: 1,
-          brickAndMortar: 1,
-          ...(shouldClauses.length > 0 || mustClauses.length > 0 ? { score: 1 } : {})
-        }
+    const limit = ['location', 'boolean', 'price'].includes(queryType) ? 200 : 50;
+    pipeline.push({ $limit: limit });
+
+    pipeline.push({
+      $project: {
+        businessId: 1,
+        name: 1,
+        sector: 1,
+        price: 1,
+        revenue: 1,
+        cashFlow: 1,
+        location: 1,
+        description: { $substr: ['$description', 0, 1000] },
+        scrapedData: { detailUrl: 1 },
+        sourceContent: {
+          financials: 1,
+          detailedInfo: 1,
+          content: { $substr: ['$sourceContent.content', 0, 1000] }
+        },
+        distressed: 1,
+        ownerAbsentee: 1,
+        sbaPreApproved: 1,
+        sellerFinancing: 1,
+        zeroDown: 1,
+        brickAndMortar: 1,
+        ...(hasSearchScore ? { score: 1 } : {})
       }
-    );
+    });
 
 
     const businesses = await Business.aggregate(pipeline).exec();
-    let filteredBusinesses = businesses;
-    if (searchTerms.length > 0 && businesses.length > 0 && businesses[0].score !== undefined && !isLocationOnlySearch) {
-      const minScore = businesses[0].score * 0.3;
-      filteredBusinesses = businesses.filter(business => business.score >= minScore);
-      if (filteredBusinesses.length < 5 && businesses.length >= 5) {
-        const relaxedMinScore = businesses[0].score * 0.15;
-        filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
-      }
+
+    if (businesses.length > 0 && hasSearchScore) {
+      console.log('Top 3 scores:', businesses.slice(0, 3).map(b => ({
+        name: b.name,
+        score: b.score,
+        location: b.location
+      })));
     }
 
-    if (filteredBusinesses.length > 0 && filteredBusinesses[0].score !== undefined) {
-      console.log('Top 3 scores:', filteredBusinesses.slice(0, 3).map(b => ({ name: b.name, score: b.score })));
+    let filteredBusinesses = businesses;
+    if (hasSearchScore && businesses.length > 0) {
+      const minScore = businesses[0].score * 0.1;
+      filteredBusinesses = businesses.filter(business => business.score >= minScore);
+      if (filteredBusinesses.length < 3 && businesses.length >= 10) {
+        const relaxedMinScore = businesses[0].score * 0.05;
+        filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
+      }
+      if (filteredBusinesses.length < 2) {
+        filteredBusinesses = businesses;
+      }
     }
 
     res.status(200).json(filteredBusinesses);
   } catch (error) {
     console.error('AI search error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
