@@ -554,7 +554,12 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         cashFlow: 1,
         location: 1,
         description: { $substr: ['$description', 0, 1000] },
-        scrapedData: { detailUrl: 1 },
+        scrapedData: {
+          detailUrl: 1,
+          source: 1, // Ensure source is included
+          priceText: 1,
+          revenueText: 1
+        },
         sourceContent: {
           financials: 1,
           detailedInfo: 1,
