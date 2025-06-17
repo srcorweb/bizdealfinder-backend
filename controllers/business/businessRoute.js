@@ -371,6 +371,31 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     let detectedState = null;
     let searchTerms = query.split(/\s+/).filter(term => term.length > 1);
 
+     const sectorMapping = {
+      'coffee shop': 'Food & Beverage',
+      'coffee': 'Food & Beverage',
+      'restaurant': 'Food & Beverage',
+      'liquor store': 'Retail',
+      'gas station': 'Services',
+      'convenience store': 'Retail',
+      'grocery': 'Retail',
+      'bar': 'Food & Beverage',
+      'cafe': 'Food & Beverage',
+      'bakery': 'Food & Beverage'
+    };
+
+    let detectedSector = null;
+    let primaryBusinessType = null;
+
+    for (const [businessType, sector] of Object.entries(sectorMapping)) {
+      if (searchTerms.some(term => businessType.includes(term)) || 
+          query.includes(businessType)) {
+        detectedSector = sector;
+        primaryBusinessType = businessType;
+        break;
+      }
+    }
+
     const queryWords = query.split(/\s+/);
     let cityStateFound = false;
     for (let i = 0; i < queryWords.length - 1; i++) {
@@ -475,13 +500,33 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       const searchQueries = [];
       const mainQuery = searchTerms.join(' ');
 
+      if (primaryBusinessType) {
+        searchQueries.push({
+          text: {
+            query: primaryBusinessType,
+            path: 'name',
+            score: { boost: { value: 50 } }
+          }
+        });
+
+        if (detectedSector) {
+          searchQueries.push({
+            text: {
+              query: detectedSector,
+              path: 'sector',
+              score: { boost: { value: 25 } }
+            }
+          });
+        }
+      }
+
       for (const term of searchTerms) {
         searchQueries.push({
           text: {
             query: term,
             path: 'name',
             fuzzy: { maxEdits: 1 },
-            score: { boost: { value: 10 } }
+            score: { boost: { value: primaryBusinessType ? 15 : 10 } }
           }
         });
 
@@ -490,7 +535,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             query: term,
             path: 'sector',
             fuzzy: { maxEdits: 1 },
-            score: { boost: { value: 8 } }
+            score: { boost: { value: primaryBusinessType ? 12 : 8 } }
           }
         });
 
@@ -499,7 +544,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             query: term,
             path: 'description',
             fuzzy: { maxEdits: 1 },
-            score: { boost: { value: 3 } }
+            score: { boost: { value: 1 } }
           }
         });
       }
@@ -509,7 +554,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           text: {
             query: mainQuery,
             path: ['name', 'sector'],
-            score: { boost: { value: 15 } }
+            score: { boost: { value: 20 } }
           }
         });
       }
@@ -519,7 +564,7 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           index: 'business_search',
           compound: {
             should: searchQueries,
-            minimumShouldMatch: Math.max(1, Math.floor(searchTerms.length * 0.5))
+            minimumShouldMatch: primaryBusinessType ? 1 : Math.max(1, Math.floor(searchTerms.length * 0.5))
           }
         }
       });
@@ -578,6 +623,57 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
 
     const businesses = await Business.aggregate(pipeline).exec();
 
+    if (primaryBusinessType && businesses.length > 0) {
+      const primaryMatches = [];
+      const secondaryMatches = [];
+      
+      for (const business of businesses) {
+        const nameLC = business.name.toLowerCase();
+        const descLC = business.description ? business.description.toLowerCase() : '';
+        const isGasStation = nameLC.includes('gas station') || nameLC.includes('gas');
+        const isCoffeeShop = nameLC.includes('coffee shop') || nameLC.includes('coffee');
+        const isLiquorStore = nameLC.includes('liquor') || nameLC.includes('alcohol');
+        const isRestaurant = nameLC.includes('restaurant') || business.sector === 'Food & Beverage';
+        
+        let isPrimaryMatch = false;
+        
+        if (primaryBusinessType === 'coffee shop' || primaryBusinessType === 'coffee') {
+          if (isCoffeeShop && !isGasStation && (business.sector === 'Food & Beverage' || nameLC.includes('cafe'))) {
+            isPrimaryMatch = true;
+          } else if (isCoffeeShop && isGasStation) {
+            business.score = business.score * 0.3;
+          } else if (!isCoffeeShop && !nameLC.includes('cafe')) {
+            business.score = business.score * 0.1;
+          }
+        }
+        else if (primaryBusinessType === 'liquor store') {
+          if (isLiquorStore && (business.sector === 'Retail' || nameLC.includes('liquor'))) {
+            isPrimaryMatch = true;
+          } else if (!isLiquorStore) {
+            business.score = business.score * 0.1;
+          }
+        }
+        else if (primaryBusinessType === 'restaurant') {
+          if (isRestaurant && !isGasStation) {
+            isPrimaryMatch = true;
+          } else if (!isRestaurant) {
+            business.score = business.score * 0.2;
+          }
+        }
+        else {
+          isPrimaryMatch = true;
+        }
+        if (isPrimaryMatch) {
+          primaryMatches.push(business);
+        } else {
+          secondaryMatches.push(business);
+        }
+      }
+
+      businesses.length = 0;
+      businesses.push(...primaryMatches, ...secondaryMatches);
+    }
+
     if (businesses.length > 0 && hasSearchScore) {
       console.log('Top 3 scores:', businesses.slice(0, 3).map(b => ({
         name: b.name,
@@ -588,14 +684,27 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
 
     let filteredBusinesses = businesses;
     if (hasSearchScore && businesses.length > 0) {
-      const minScore = businesses[0].score * 0.1;
-      filteredBusinesses = businesses.filter(business => business.score >= minScore);
-      if (filteredBusinesses.length < 3 && businesses.length >= 10) {
-        const relaxedMinScore = businesses[0].score * 0.05;
-        filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
-      }
-      if (filteredBusinesses.length < 2) {
-        filteredBusinesses = businesses;
+      if (primaryBusinessType) {
+        const minScore = businesses[0].score * 0.3;
+        filteredBusinesses = businesses.filter(business => business.score >= minScore);
+
+        if (filteredBusinesses.length < 3 && businesses.length >= 5) {
+          const relaxedMinScore = businesses[0].score * 0.15;
+          filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
+        }
+        if (filteredBusinesses.length < 2) {
+          filteredBusinesses = businesses.slice(0, 15);
+        }
+      } else {
+        const minScore = businesses[0].score * 0.1;
+        filteredBusinesses = businesses.filter(business => business.score >= minScore);
+        if (filteredBusinesses.length < 3 && businesses.length >= 10) {
+          const relaxedMinScore = businesses[0].score * 0.05;
+          filteredBusinesses = businesses.filter(business => business.score >= relaxedMinScore);
+        }
+        if (filteredBusinesses.length < 2) {
+          filteredBusinesses = businesses;
+        }
       }
     }
 
