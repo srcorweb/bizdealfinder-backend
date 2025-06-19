@@ -51,13 +51,33 @@ const retryWithBackoff = async (fn, retries = 3, delay = 1000) => {
 const extractMetricsFromDescription = async (description) => {
   const metrics = [];
   const regexPatterns = [
-    { key: 'Year Established', pattern: /(\d{4})\s*(?:founded|established|started|since)/i },
+    { key: 'Year Established', pattern: /(?:established|founded|started|since)\s*:?\s*(\d{4})/i },
     { key: 'Years in Operation', pattern: /(\d+)\s*(?:years?|yrs?)\s*(?:in\s*operation|operating|established)/i },
     { key: 'Employees', pattern: /(\d+)\s*(?:employees|staff|team\s*members)/i },
-    { key: 'Revenue', pattern: /\$([\d,.]+)\s*(?:revenue|sales|income)/i },
-    { key: 'Cash Flow', pattern: /\$([\d,.]+)\s*(?:cash\s*flow|profit|earnings)/i },
-    { key: 'Monthly Rent', pattern: /\$([\d,.]+)\s*(?:rent|monthly\s*rent)/i }
+    { key: 'Asking Price', pattern: /(?:asking\s*price|sale\s*price|price)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Gross Revenue', pattern: /(?:gross\s*revenue|annual\s*revenue|yearly\s*revenue)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Revenue', pattern: /(?:^|\s)(?:revenue|sales|income)(?!\s*(?:growth|multiple))\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Cash Flow', pattern: /(?:cash\s*flow|net\s*income|profit)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Monthly Cash Flow', pattern: /(?:monthly\s*cash\s*flow|monthly\s*profit)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'EBITDA', pattern: /(?:ebitda|earnings)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Monthly Rent', pattern: /(?:rent|monthly\s*rent)\s*:?\s*\$([\d,.]+)/i },
+    { key: 'Down Payment', pattern: /(?:down\s*payment)\s*:?\s*\$([\d,.]+)/i }
   ];
+
+  const lines = description.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  
+  for (const line of lines) {
+    for (const { key, pattern } of regexPatterns) {
+      const match = line.match(pattern);
+      if (match && !metrics.some(m => m.key === key)) {
+        let value = match[1].replace(/,/g, '');
+        if (key.includes('Price') || key.includes('Revenue') || key.includes('Cash Flow') || key.includes('EBITDA') || key.includes('Rent') || key.includes('Payment')) {
+          value = `$${parseInt(value).toLocaleString()}`;
+        }
+        metrics.push({ key, value, source: 'regex' });
+      }
+    }
+  }
 
   for (const { key, pattern } of regexPatterns) {
     const match = description.match(pattern);
@@ -933,6 +953,42 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
           { $set: { aiGeneratedDescription } }
         );
       }
+      let correctedFinancials = [];
+
+      if (business.sourceContent?.financials?.length > 0) {
+        for (const financial of business.sourceContent.financials) {
+          const value = financial.value.replace(/[^0-9]/g, '');
+          const numericValue = parseInt(value);
+
+          if (financial.key === 'Cash Flow' && numericValue === business.price) {
+            correctedFinancials.push({ key: 'Asking Price', value: financial.value });
+          } else if (financial.key === 'Revenue' && numericValue === business.cashFlow) {
+            correctedFinancials.push({ key: 'Cash Flow', value: financial.value });
+          } else {
+            correctedFinancials.push(financial);
+          }
+        }
+
+        const hasAskingPrice = correctedFinancials.some(f => f.key === 'Asking Price');
+        const hasRevenue = correctedFinancials.some(f => f.key === 'Revenue' || f.key === 'Gross Revenue');
+        const hasCashFlow = correctedFinancials.some(f => f.key === 'Cash Flow');
+
+        if (!hasAskingPrice) {
+          correctedFinancials.unshift({ key: 'Asking Price', value: `$${business.price.toLocaleString()}` });
+        }
+        if (!hasRevenue && business.revenue) {
+          correctedFinancials.push({ key: 'Gross Revenue', value: `$${business.revenue.toLocaleString()}` });
+        }
+        if (!hasCashFlow && business.cashFlow) {
+          correctedFinancials.push({ key: 'Cash Flow', value: `$${business.cashFlow.toLocaleString()}` });
+        }
+      } else {
+        correctedFinancials = [
+          { key: 'Asking Price', value: `$${business.price.toLocaleString()}` },
+          { key: 'Gross Revenue', value: business.revenue ? `$${business.revenue.toLocaleString()}` : 'Unavailable' },
+          ...(business.cashFlow ? [{ key: 'Cash Flow', value: `$${business.cashFlow.toLocaleString()}` }] : [])
+        ];
+      }
 
       return res.status(200).json({
         businessName: business.name,
@@ -947,11 +1003,7 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
         valuation: business.valuation,
         detailUrl: business.scrapedData?.detailUrl || '',
         sourceData: {
-          financials: business.sourceContent?.financials || [
-            { key: 'Asking Price', value: `$${business.price.toLocaleString()}` },
-            { key: 'Revenue', value: business.revenue ? `$${business.revenue.toLocaleString()}` : 'Unavailable' },
-            ...(business.cashFlow ? [{ key: 'Cash Flow (Monthly)', value: `$${business.cashFlow.toLocaleString()}` }] : [])
-          ],
+          financials: correctedFinancials,
           detailedInfo: business.sourceContent?.detailedInfo || []
         }
       });
@@ -1121,6 +1173,69 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
                 detailedInfo.push(metric);
               }
             }
+          } else if (business.scrapedData?.source === 'DealStream') {
+            const browser = await puppeteer.launch({
+              headless: true,
+              args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+              protocolTimeout: 120000
+            });
+            const page = await browser.newPage();
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            await page.setViewport({ width: 1280, height: 800 });
+
+            console.log(`Scraping DealStream page (attempt ${attempt + 1}): ${business.scrapedData.detailUrl}`);
+            await page.goto(business.scrapedData.detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+            const dealStreamData = await page.evaluate(() => {
+              const extractFinancialData = () => {
+                const financials = [];
+                const detailedInfo = [];
+
+                const financialSection = document.querySelector('.financial-info, .deal-financials, .listing-details');
+                if (financialSection) {
+                  const text = financialSection.innerText;
+                  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+                  for (const line of lines) {
+                    if (line.includes('Asking Price:') || line.includes('Sale Price:')) {
+                      const match = line.match(/\$([\d,.]+)/);
+                      if (match) financials.push({ key: 'Asking Price', value: `$${parseInt(match[1].replace(/,/g, '')).toLocaleString()}` });
+                    } else if (line.includes('Cash Flow:') && !line.includes('Asking Price')) {
+                      const match = line.match(/\$([\d,.]+)/);
+                      if (match) financials.push({ key: 'Cash Flow', value: `$${parseInt(match[1].replace(/,/g, '')).toLocaleString()}` });
+                    } else if (line.includes('Gross Revenue:') || line.includes('Annual Revenue:')) {
+                      const match = line.match(/\$([\d,.]+)/);
+                      if (match) financials.push({ key: 'Gross Revenue', value: `$${parseInt(match[1].replace(/,/g, '')).toLocaleString()}` });
+                    } else if (line.includes('Down Payment:')) {
+                      const match = line.match(/\$([\d,.]+)/);
+                      if (match) detailedInfo.push({ key: 'Down Payment', value: `$${parseInt(match[1].replace(/,/g, '')).toLocaleString()}` });
+                    } else if (line.includes('Years Established:') || line.includes('Year Established:')) {
+                      const match = line.match(/(\d{4})/);
+                      if (match) {
+                        const yearsInBusiness = new Date().getFullYear() - parseInt(match[1]);
+                        detailedInfo.push({ key: 'Years in Business', value: yearsInBusiness.toString() });
+                      }
+                    }
+                  }
+                }
+
+                return { financials, detailedInfo, fullText: document.body.innerText };
+              };
+
+              return extractFinancialData();
+            });
+
+            sourceContent = await page.content();
+            await browser.close();
+
+            financials = dealStreamData.financials;
+            detailedInfo = dealStreamData.detailedInfo;
+
+            if (financials.length === 0) {
+              const descMetrics = await extractMetricsFromDescription(dealStreamData.fullText || business.description);
+              financials = descMetrics.filter(m => ['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow', 'Monthly Cash Flow', 'EBITDA'].includes(m.key));
+              detailedInfo = [...detailedInfo, ...descMetrics.filter(m => !['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow', 'Monthly Cash Flow', 'EBITDA'].includes(m.key))];
+            }
           } else {
             // Puppeteer for other sources
             const browser = await puppeteer.launch({
@@ -1140,8 +1255,8 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
             const $ = cheerio.load(sourceContent);
             const description = $('body').text().trim();
             const descMetrics = await extractMetricsFromDescription(description);
-            financials = descMetrics.filter(m => ['Revenue', 'Cash Flow', 'Monthly Rent'].includes(m.key));
-            detailedInfo = descMetrics.filter(m => !['Revenue', 'Cash Flow', 'Monthly Rent'].includes(m.key));
+            financials = descMetrics.filter(m => ['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow', 'Monthly Cash Flow', 'EBITDA'].includes(m.key));
+            detailedInfo = descMetrics.filter(m => !['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow', 'Monthly Cash Flow', 'EBITDA'].includes(m.key));
           }
 
           // Cache the scraped content
@@ -1178,9 +1293,26 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
       console.log(`Using existing data for analysis of ${businessId}`);
       financials = business.sourceContent?.financials || [
         { key: 'Asking Price', value: `$${business.price.toLocaleString()}` },
-        { key: 'Revenue', value: business.revenue ? `$${business.revenue.toLocaleString()}` : 'Unavailable' },
-        ...(business.cashFlow ? [{ key: 'Cash Flow (Monthly)', value: `$${business.cashFlow.toLocaleString()}` }] : [])
+        { key: 'Gross Revenue', value: business.revenue ? `$${business.revenue.toLocaleString()}` : 'Unavailable' },
+        ...(business.cashFlow ? [{ key: 'Cash Flow', value: `$${business.cashFlow.toLocaleString()}` }] : [])
       ];
+
+      if (business.sourceContent?.financials?.length > 0) {
+        const validatedFinancials = [];
+        for (const financial of business.sourceContent.financials) {
+          const value = financial.value.replace(/[^0-9]/g, '');
+          const numericValue = parseInt(value);
+
+          if (financial.key === 'Cash Flow' && numericValue === business.price) {
+            validatedFinancials.push({ key: 'Asking Price', value: financial.value });
+          } else if (financial.key === 'Revenue' && numericValue === business.cashFlow) {
+            validatedFinancials.push({ key: 'Cash Flow', value: financial.value });
+          } else {
+            validatedFinancials.push(financial);
+          }
+        }
+        financials = validatedFinancials;
+      }
       detailedInfo = business.sourceContent?.detailedInfo || [];
       sourceContent = business.sourceContent?.content || business.description || '';
     }
