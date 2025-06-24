@@ -1487,6 +1487,10 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
   }
 });
 
+const createBusinessReference = (business) => {
+  return business.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase().substring(0, 50);
+};
+
 // BizGPT chat endpoint
 router.post('/bizgpt', authMiddleware, async (req, res) => {
   try {
@@ -1526,27 +1530,47 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
               businessId: { $ne: currentBusiness.businessId }
             }
           },
-          { $limit: 20 }
+          { $limit: 20 },
+          {
+            $project: {
+              businessId: 1,
+              name: 1,
+              sector: 1,
+              price: 1,
+              revenue: 1,
+              cashFlow: 1,
+              location: 1,
+              distressed: 1,
+              ownerAbsentee: 1,
+              sbaPreApproved: 1,
+              riskScore: '$riskAnalysis.score',
+              detailUrl: '$scrapedData.detailUrl'
+            }
+          }
         ];
       } else {
         pipeline = [
-          { $sample: { size: 50 } }
+          { $sample: { size: 50 } },
+          {
+            $project: {
+              businessId: 1,
+              name: 1,
+              sector: 1,
+              price: 1,
+              revenue: 1,
+              cashFlow: 1,
+              location: 1,
+              distressed: 1,
+              ownerAbsentee: 1,
+              sbaPreApproved: 1,
+              riskScore: '$riskAnalysis.score'
+            }
+          }
         ];
       }
 
       const similarBusinesses = await Business.aggregate(pipeline).exec();
-      contextData.similarBusinesses = similarBusinesses.map(b => ({
-        name: b.name,
-        sector: b.sector,
-        price: b.price,
-        revenue: b.revenue,
-        cashFlow: b.cashFlow,
-        location: b.location,
-        distressed: b.distressed,
-        ownerAbsentee: b.ownerAbsentee,
-        sbaPreApproved: b.sbaPreApproved,
-        riskScore: b.riskAnalysis?.score
-      }));
+      contextData.similarBusinesses = similarBusinesses;
 
       const sectorStats = await Business.aggregate([
         { $match: { sector: currentBusiness?.sector || { $exists: true } } },
@@ -1567,6 +1591,15 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
 
     const prompt = `
       You are BizGPT, an expert business acquisition advisor with access to a comprehensive database of business listings. Answer the user's question about business deals with specific, data-driven insights.
+
+      IMPORTANT: When referencing specific businesses from the database, format them as clickable references using this exact format:
+      [BUSINESS_LINK:businessRef:Business Name]
+
+      For example: [BUSINESS_LINK:sba_approved_absentee_owned_dog_training_business:SBA Approved/ Absentee Owned Dog Training Business]
+
+      Use the BusinessRef provided in the similar businesses list when creating these links.
+
+      This will allow users to click directly to view the business details.
 
       Current Business Context:
       ${currentBusiness ? `
@@ -1589,9 +1622,10 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
       Database Context:
       ${contextData.similarBusinesses ? `
       Similar Businesses (${contextData.similarBusinesses.length} listings):
-      ${contextData.similarBusinesses.slice(0, 10).map(b => 
-        `- ${b.name}: $${b.price.toLocaleString()} (Revenue: ${b.revenue ? `$${b.revenue.toLocaleString()}` : 'N/A'}, Cash Flow: ${b.cashFlow ? `$${b.cashFlow.toLocaleString()}` : 'N/A'})`
-      ).join('\n')}
+      ${contextData.similarBusinesses.slice(0, 10).map(b => {
+        const businessRef = createBusinessReference(b);
+        return `- BusinessRef: ${businessRef}, Name: ${b.name}, Price: $${b.price.toLocaleString()}, Revenue: ${b.revenue ? `$${b.revenue.toLocaleString()}` : 'N/A'}, Cash Flow: ${b.cashFlow ? `$${b.cashFlow.toLocaleString()}` : 'N/A'}, Location: ${b.location.city}, ${b.location.state}`;
+      }).join('\n')}
       ` : ''}
 
       ${contextData.sectorStats ? `
@@ -1611,7 +1645,8 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
       5. Be honest about limitations in the data
       6. Keep responses concise but comprehensive (2-4 paragraphs max)
       7. Use dollar amounts and percentages where relevant
-      8. If asking about risks, be thorough but balanced
+      8. When referencing specific businesses, use the [BUSINESS_LINK:businessId:Business Name] format
+      9. If asking about risks, be thorough but balanced
 
       Answer the question directly and professionally:
     `;
@@ -1628,10 +1663,27 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
       })
     );
 
-    const answer = response.choices[0].message.content;
+    let answer = response.choices[0].message.content;
 
-    res.status(200).json({
+    const businessReferences = [];
+    if (contextData.similarBusinesses) {
+      contextData.similarBusinesses.forEach(business => {
+        const businessRef = createBusinessReference(business);
+        const linkPattern = new RegExp(`\\[BUSINESS_LINK:${businessRef}:([^\\]]+)\\]`, 'g');
+        if (answer.includes(`BUSINESS_LINK:${businessRef}`)) {
+          businessReferences.push({
+            businessRef: businessRef,
+            businessId: business.businessId,
+            name: business.name,
+            detailUrl: business.businessId
+          });
+        }
+      });
+    }
+
+    res.status(200).json({ 
       answer,
+      businessReferences,
       context: {
         businessAnalyzed: currentBusiness?.name || null,
         similarBusinessesCount: contextData.similarBusinesses?.length || 0,
