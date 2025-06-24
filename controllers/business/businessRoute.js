@@ -1487,6 +1487,164 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
   }
 });
 
+// BizGPT chat endpoint
+router.post('/bizgpt', authMiddleware, async (req, res) => {
+  try {
+    const { question, businessId } = req.body;
+    if (!question) {
+      return res.status(400).json({ message: 'Question required' });
+    }
+
+    let currentBusiness = null;
+    if (businessId) {
+      currentBusiness = await Business.findOne({ businessId }).lean();
+      if (!currentBusiness) {
+        return res.status(404).json({ message: 'Business not found' });
+      }
+    }
+
+    const questionLower = question.toLowerCase();
+    let contextData = {};
+
+    if (questionLower.includes('compare') || questionLower.includes('similar') || 
+        questionLower.includes('better') || questionLower.includes('other') ||
+        questionLower.includes('top') || questionLower.includes('best') ||
+        questionLower.includes('roi') || questionLower.includes('return') ||
+        questionLower.includes('cheaper') || questionLower.includes('expensive')) {
+      
+      let pipeline = [];
+      
+      if (currentBusiness) {
+        pipeline = [
+          {
+            $match: {
+              sector: currentBusiness.sector,
+              price: { 
+                $gte: currentBusiness.price * 0.3, 
+                $lte: currentBusiness.price * 3 
+              },
+              businessId: { $ne: currentBusiness.businessId }
+            }
+          },
+          { $limit: 20 }
+        ];
+      } else {
+        pipeline = [
+          { $sample: { size: 50 } }
+        ];
+      }
+
+      const similarBusinesses = await Business.aggregate(pipeline).exec();
+      contextData.similarBusinesses = similarBusinesses.map(b => ({
+        name: b.name,
+        sector: b.sector,
+        price: b.price,
+        revenue: b.revenue,
+        cashFlow: b.cashFlow,
+        location: b.location,
+        distressed: b.distressed,
+        ownerAbsentee: b.ownerAbsentee,
+        sbaPreApproved: b.sbaPreApproved,
+        riskScore: b.riskAnalysis?.score
+      }));
+
+      const sectorStats = await Business.aggregate([
+        { $match: { sector: currentBusiness?.sector || { $exists: true } } },
+        {
+          $group: {
+            _id: '$sector',
+            avgPrice: { $avg: '$price' },
+            avgRevenue: { $avg: '$revenue' },
+            avgCashFlow: { $avg: '$cashFlow' },
+            count: { $sum: 1 },
+            minPrice: { $min: '$price' },
+            maxPrice: { $max: '$price' }
+          }
+        }
+      ]).exec();
+      contextData.sectorStats = sectorStats;
+    }
+
+    const prompt = `
+      You are BizGPT, an expert business acquisition advisor with access to a comprehensive database of business listings. Answer the user's question about business deals with specific, data-driven insights.
+
+      Current Business Context:
+      ${currentBusiness ? `
+      - Name: ${currentBusiness.name}
+      - Sector: ${currentBusiness.sector}
+      - Price: $${currentBusiness.price.toLocaleString()}
+      - Revenue: ${currentBusiness.revenue ? `$${currentBusiness.revenue.toLocaleString()}` : 'N/A'}
+      - Monthly Cash Flow: ${currentBusiness.cashFlow ? `$${currentBusiness.cashFlow.toLocaleString()}` : 'N/A'}
+      - Location: ${currentBusiness.location.city}, ${currentBusiness.location.state}
+      - Risk Score: ${currentBusiness.riskAnalysis?.score || 'N/A'}
+      - Special Features: ${[
+        currentBusiness.distressed ? 'Distressed' : null,
+        currentBusiness.ownerAbsentee ? 'Owner Absentee' : null,
+        currentBusiness.sbaPreApproved ? 'SBA Pre-approved' : null,
+        currentBusiness.sellerFinancing ? 'Seller Financing' : null,
+        currentBusiness.zeroDown ? 'Zero Down' : null
+      ].filter(Boolean).join(', ') || 'None'}
+      ` : 'No specific business selected.'}
+
+      Database Context:
+      ${contextData.similarBusinesses ? `
+      Similar Businesses (${contextData.similarBusinesses.length} listings):
+      ${contextData.similarBusinesses.slice(0, 10).map(b => 
+        `- ${b.name}: $${b.price.toLocaleString()} (Revenue: ${b.revenue ? `$${b.revenue.toLocaleString()}` : 'N/A'}, Cash Flow: ${b.cashFlow ? `$${b.cashFlow.toLocaleString()}` : 'N/A'})`
+      ).join('\n')}
+      ` : ''}
+
+      ${contextData.sectorStats ? `
+      Sector Statistics:
+      ${contextData.sectorStats.map(s => 
+        `- ${s._id}: Avg Price $${Math.round(s.avgPrice).toLocaleString()}, Avg Revenue $${Math.round(s.avgRevenue || 0).toLocaleString()}, ${s.count} listings`
+      ).join('\n')}
+      ` : ''}
+
+      User Question: "${question}"
+
+      Guidelines:
+      1. Be specific and data-driven in your responses
+      2. Include relevant comparisons when available
+      3. Calculate ROI, multiples, and returns when asked
+      4. Suggest actionable next steps
+      5. Be honest about limitations in the data
+      6. Keep responses concise but comprehensive (2-4 paragraphs max)
+      7. Use dollar amounts and percentages where relevant
+      8. If asking about risks, be thorough but balanced
+
+      Answer the question directly and professionally:
+    `;
+
+    const response = await retryWithBackoff(() =>
+      openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'You are BizGPT, an expert business acquisition advisor with deep knowledge of business valuation, due diligence, and market analysis.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 800
+      })
+    );
+
+    const answer = response.choices[0].message.content;
+
+    res.status(200).json({
+      answer,
+      context: {
+        businessAnalyzed: currentBusiness?.name || null,
+        similarBusinessesCount: contextData.similarBusinesses?.length || 0,
+        sectorAnalyzed: currentBusiness?.sector || null
+      }
+    });
+
+  } catch (error) {
+    console.error('BizGPT error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Contact form submission
 router.post('/contact', authMiddleware, async (req, res) => {
   try {
