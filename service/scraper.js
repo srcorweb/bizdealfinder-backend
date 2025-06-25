@@ -539,6 +539,66 @@ const scrapeBusinesses = async () => {
         }
       },
       {
+        name: 'BizBuySell-SBA',
+        scrape: async () => {
+          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/?q=az1zYmE%3D' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/?q=az1zYmE%3D`;
+            console.log(`Fetching BizBuySell SBA page ${pageNum}: ${url}`);
+            try {
+              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+              const safariAgents = [
+                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+              ];
+              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+              const start = Date.now();
+              const response = await axios.get(url, {
+                httpsAgent,
+                timeout: 30000,
+                headers: { 'User-Agent': userAgent }
+              });
+              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
+
+              const $ = cheerio.load(response.data);
+              const snippets = [];
+              $('app-listing-diamond').each((_, el) => {
+                const detailUrl = $(el).find('a').attr('href') || '';
+                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+                snippets.push({ html: $.html(el), detailUrl: fullUrl });
+              });
+              console.log(`Found ${snippets.length} BizBuySell SBA listings on page ${pageNum}`);
+
+              for (const { html, detailUrl } of snippets) {
+                try {
+                  const aiResp = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: html }
+                    ],
+                    response_format: { type: 'json_object' }
+                  });
+                  const listing = JSON.parse(aiResp.choices[0].message.content);
+                  listing.scrapedData.source = 'BizBuySell';
+                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                  listing.businessId = detailUrl || listing.businessId;
+                  listing.sbaPreApproved = true;
+                  console.log(`Extracted SBA listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                  allListings.push(listing);
+                } catch (err) {
+                  console.error(`BizBuySell SBA parse error on page ${pageNum}:`, err.message);
+                }
+              }
+            } catch (err) {
+              console.error(`Error fetching BizBuySell SBA page ${pageNum}:`, err.message);
+              console.log(`Skipping to next site due to BizBuySell SBA page ${pageNum} failure`);
+              throw new Error(`Failed to scrape BizBuySell SBA page ${pageNum}`);
+            }
+            await sleep(5000);
+          }
+        }
+      },
+      {
         name: 'SunbeltNetwork',
         scrape: async () => {
           for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
