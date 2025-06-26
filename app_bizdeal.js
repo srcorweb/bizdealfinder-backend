@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const winston = require('winston');
 const { format, transports } = require('winston');
 const { scrapeBusinesses } = require('./service/scraper');
+const { cleanupInactiveListings } = require('./service/cleanup-scraper');
 const cron = require('node-cron');
 const axios = require('axios');
 
@@ -125,6 +126,26 @@ cron.schedule('0 0 * * *', async () => {
   console.log('Running scraper and checking matches...');
   const newListings = await scrapeBusinesses();
   await checkMatches(newListings);
+});
+
+cron.schedule('0 12 * * 1', async () => {
+  const now = new Date();
+  const weekNumber = Math.ceil(now.getDate() / 7);
+
+  // Only run on even weeks (every 2 weeks)
+  if (weekNumber % 2 === 0) {
+    console.log('Running bi-weekly cleanup of inactive listings...');
+    try {
+      await cleanupInactiveListings();
+      console.log('Bi-weekly cleanup completed successfully');
+    } catch (error) {
+      console.error('Bi-weekly cleanup failed:', error.message);
+    }
+  } else {
+    console.log('Skipping cleanup this week (runs bi-weekly)');
+  }
+}, {
+  timezone: "America/New_York"
 });
 
 app.use((err, req, res, next) => {
