@@ -392,46 +392,165 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     let searchTerms = query.split(/\s+/).filter(term => term.length > 1);
 
      const sectorMapping = {
+      'barber shop': 'Services',
+      'hair salon': 'Services',
+      'beauty salon': 'Services',
       'coffee shop': 'Food & Beverage',
-      'coffee': 'Food & Beverage',
-      'restaurant': 'Food & Beverage',
-      'liquor store': 'Retail',
-      'gas station': 'Services',
       'convenience store': 'Retail',
+      'liquor store': 'Retail',
+      'clothing store': 'Retail',
+      'gas station': 'Services',
+      'restaurant': 'Food & Beverage',
+      'cosmetics': 'Services',
+      'clothing': 'Retail',
+      'apparel': 'Retail',
+      'fashion': 'Retail',
+      'boutique': 'Retail',
       'grocery': 'Retail',
-      'bar': 'Food & Beverage',
+      'coffee': 'Food & Beverage',
+      'bakery': 'Food & Beverage',
+      'barber': 'Services',
+      'salon': 'Services',
+      'beauty': 'Services',
       'cafe': 'Food & Beverage',
-      'bakery': 'Food & Beverage'
+      'bar': 'Food & Beverage',
+      'hotel': 'Services',
+      'hotels': 'Services',
+      'motel': 'Services',
+      'motels': 'Services',
+      'car dealership': 'Retail',
+      'auto dealership': 'Retail',
+      'motorcycle dealership': 'Retail',
+      'dealership': 'Retail',
+      'auto dealer': 'Retail',
+      'car dealer': 'Retail',
+      'hotel': 'Services',
+      'hotels': 'Services',
+      'motel': 'Services',
+      'motels': 'Services'
+    };
+
+    // Add semantic keyword mapping for better search understanding
+    const semanticKeywords = {
+      'barber shop': ['hair', 'salon', 'barber', 'haircut', 'styling', 'beauty'],
+      'barber': ['hair', 'salon', 'barber', 'haircut', 'styling', 'beauty'],
+      'hair salon': ['hair', 'salon', 'barber', 'haircut', 'styling', 'beauty'],
+      'salon': ['hair', 'salon', 'barber', 'haircut', 'styling', 'beauty'],
+      'beauty salon': ['hair', 'salon', 'barber', 'haircut', 'styling', 'beauty'],
+      'cosmetics': ['hair', 'salon', 'beauty', 'cosmetics', 'makeup', 'skincare'],
+      'beauty': ['hair', 'salon', 'beauty', 'cosmetics', 'makeup', 'skincare'],
+      'clothing store': ['clothing', 'apparel', 'fashion', 'boutique', 'retail', 'garment'],
+      'clothing': ['clothing', 'apparel', 'fashion', 'boutique', 'retail', 'garment'],
+      'apparel': ['clothing', 'apparel', 'fashion', 'boutique', 'retail', 'garment'],
+      'fashion': ['clothing', 'apparel', 'fashion', 'boutique', 'retail', 'garment'],
+      'boutique': ['clothing', 'apparel', 'fashion', 'boutique', 'retail', 'garment'],
+      'hotel': ['hotel', 'motel', 'inn', 'lodge', 'resort', 'accommodation'],
+      'hotels': ['hotel', 'motel', 'inn', 'lodge', 'resort', 'accommodation'],
+      'motel': ['hotel', 'motel', 'inn', 'lodge', 'resort', 'accommodation'],
+      'motels': ['hotel', 'motel', 'inn', 'lodge', 'resort', 'accommodation'],
+      'convenience store': ['convenience', 'c-store', 'corner store', 'mini mart', 'quick stop', 'market', 'convenience store'],
+      'liquor store': ['liquor', 'alcohol', 'wine', 'beer', 'spirits', 'liquor store'],
+      'car dealership': ['car', 'auto', 'vehicle', 'dealership', 'dealer', 'automotive', 'motorcycle'],
+      'auto dealership': ['car', 'auto', 'vehicle', 'dealership', 'dealer', 'automotive', 'motorcycle'],
+      'motorcycle dealership': ['motorcycle', 'bike', 'dealership', 'dealer', 'auto', 'vehicle'],
+      'dealership': ['car', 'auto', 'vehicle', 'dealership', 'dealer', 'automotive', 'motorcycle'],
+      'auto dealer': ['car', 'auto', 'vehicle', 'dealership', 'dealer', 'automotive'],
+      'car dealer': ['car', 'auto', 'vehicle', 'dealership', 'dealer', 'automotive'],
+      'hotel': ['hotel', 'motel', 'inn', 'lodge', 'resort', 'accommodation'],
     };
 
     let detectedSector = null;
     let primaryBusinessType = null;
 
-    for (const [businessType, sector] of Object.entries(sectorMapping)) {
-      if (searchTerms.some(term => businessType.includes(term)) || 
-          query.includes(businessType)) {
+    console.log('=== BUSINESS TYPE DETECTION DEBUG ===');
+    console.log('Original query:', originalQuery);
+    console.log('Processed query:', query);
+    console.log('Search terms:', searchTerms);
+    console.log('Detected city:', detectedCity);
+    console.log('Detected state:', detectedState);
+    console.log('Final location:', location);
+
+    const sortedBusinessTypes = Object.entries(sectorMapping).sort((a, b) => b[0].length - a[0].length);
+
+    for (const [businessType, sector] of sortedBusinessTypes) {
+      console.log('Checking business type:', businessType, 'against query:', query);
+      
+      // Check exact phrase match first
+      if (query.includes(businessType)) {
         detectedSector = sector;
         primaryBusinessType = businessType;
+        console.log('EXACT MATCH FOUND:', businessType, '-> SECTOR:', sector);
         break;
+      }
+    }
+
+    // Special handling for common variations
+    if (!primaryBusinessType) {
+      for (const [businessType, sector] of sortedBusinessTypes) {
+        const businessWords = businessType.split(' ');
+        const matchCount = businessWords.filter(word => 
+          searchTerms.includes(word)
+        ).length;
+        
+        // If all words of the business type are found in search terms
+        if (matchCount === businessWords.length && businessWords.length > 1) {
+          detectedSector = sector;
+          primaryBusinessType = businessType;
+          console.log('PARTIAL MATCH FOUND:', businessType, '-> SECTOR:', sector);
+          break;
+        }
+      }
+    }
+
+    // Try single word matches for common business types
+    if (!primaryBusinessType) {
+      for (const [businessType, sector] of sortedBusinessTypes) {
+        if (businessType.split(' ').length === 1 && searchTerms.includes(businessType)) {
+          detectedSector = sector;
+          primaryBusinessType = businessType;
+          console.log('SINGLE WORD MATCH FOUND:', businessType, '-> SECTOR:', sector);
+          break;
+        }
       }
     }
 
     const queryWords = query.split(/\s+/);
     let cityStateFound = false;
-    for (let i = 0; i < queryWords.length - 1; i++) {
-      const potentialCity = queryWords[i];
-      const potentialState = queryWords[i + 1];
 
-      if (majorCities.includes(potentialCity) && stateNames.includes(potentialState)) {
-        detectedCity = potentialCity;
-        detectedState = potentialState;
-        location = `${potentialCity}, ${potentialState}`;
+    // Check for multi-word cities like "Los Angeles"
+    const multiWordCities = ['los angeles', 'san francisco', 'new york', 'las vegas', 'san diego', 'san jose', 'new orleans'];
 
-        searchTerms = searchTerms.filter(term =>
-          term !== potentialCity && term !== potentialState
-        );
+    for (const city of multiWordCities) {
+      if (query.includes(city)) {
+        detectedCity = city;
+        location = city;
+        
+        // Remove city words from search terms
+        const cityWords = city.split(' ');
+        searchTerms = searchTerms.filter(term => !cityWords.includes(term));
         cityStateFound = true;
+        console.log('Multi-word city detected:', city);
         break;
+      }
+    }
+
+    // If no multi-word city found, try single word combinations
+    if (!cityStateFound) {
+      for (let i = 0; i < queryWords.length - 1; i++) {
+        const potentialCity = queryWords[i];
+        const potentialState = queryWords[i + 1];
+
+        if (majorCities.includes(potentialCity) && stateNames.includes(potentialState)) {
+          detectedCity = potentialCity;
+          detectedState = potentialState;
+          location = `${potentialCity}, ${potentialState}`;
+
+          searchTerms = searchTerms.filter(term =>
+            term !== potentialCity && term !== potentialState
+          );
+          cityStateFound = true;
+          break;
+        }
       }
     }
 
@@ -507,10 +626,20 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           { 'location.state': { $regex: new RegExp('^' + escapeRegex(detectedState) + '$', 'i') } }
         ];
       } else if (detectedCity) {
-        matchFilters['location.city'] = { $regex: new RegExp('^' + escapeRegex(detectedCity) + '$', 'i') };
+        matchFilters['location.city'] = { 
+          $regex: `^${escapeRegex(detectedCity)}$`,
+          $options: 'i'
+        };
+        console.log('City filter applied for:', detectedCity);
       } else if (detectedState) {
-        matchFilters['location.state'] = { $regex: new RegExp('^' + escapeRegex(detectedState) + '$', 'i') };
+        matchFilters['location.state'] = { 
+          $regex: `^${escapeRegex(detectedState)}$`,
+          $options: 'i'
+        };
+        console.log('State filter applied for:', detectedState);
       }
+      
+      console.log('Location filter applied:', JSON.stringify(matchFilters, null, 2));
     }
 
     const pipeline = [];
@@ -520,15 +649,37 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       const searchQueries = [];
       const mainQuery = searchTerms.join(' ');
 
-      if (primaryBusinessType) {
-        searchQueries.push({
-          text: {
-            query: primaryBusinessType,
-            path: 'name',
-            score: { boost: { value: 50 } }
-          }
-        });
+      console.log('=== SEARCH QUERY GENERATION DEBUG ===');
+      console.log('Query type:', queryType);
+      console.log('Main query:', mainQuery);
+      console.log('Primary business type:', primaryBusinessType);
 
+      if (primaryBusinessType && semanticKeywords[primaryBusinessType]) {
+        const keywords = semanticKeywords[primaryBusinessType];
+        console.log('Using semantic keywords only for:', primaryBusinessType);
+        
+        // Search with semantic keywords ONLY - don't also search original terms
+        for (const keyword of keywords) {
+          searchQueries.push({
+            text: {
+              query: keyword,
+              path: 'name',
+              fuzzy: { maxEdits: 1 },
+              score: { boost: { value: 40 } }
+            }
+          });
+
+          searchQueries.push({
+            text: {
+              query: keyword,
+              path: 'description',
+              fuzzy: { maxEdits: 1 },
+              score: { boost: { value: 20 } }
+            }
+          });
+        }
+        
+        // Add sector search
         if (detectedSector) {
           searchQueries.push({
             text: {
@@ -538,35 +689,36 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             }
           });
         }
-      }
+      } else {
+        // Use original search terms for non-mapped business types
+        for (const term of searchTerms) {
+          searchQueries.push({
+            text: {
+              query: term,
+              path: 'name',
+              fuzzy: { maxEdits: 1 },
+              score: { boost: { value: primaryBusinessType ? 15 : 10 } }
+            }
+          });
 
-      for (const term of searchTerms) {
-        searchQueries.push({
-          text: {
-            query: term,
-            path: 'name',
-            fuzzy: { maxEdits: 1 },
-            score: { boost: { value: primaryBusinessType ? 15 : 10 } }
-          }
-        });
+          searchQueries.push({
+            text: {
+              query: term,
+              path: 'sector',
+              fuzzy: { maxEdits: 1 },
+              score: { boost: { value: primaryBusinessType ? 12 : 8 } }
+            }
+          });
 
-        searchQueries.push({
-          text: {
-            query: term,
-            path: 'sector',
-            fuzzy: { maxEdits: 1 },
-            score: { boost: { value: primaryBusinessType ? 12 : 8 } }
-          }
-        });
-
-        searchQueries.push({
-          text: {
-            query: term,
-            path: 'description',
-            fuzzy: { maxEdits: 1 },
-            score: { boost: { value: 1 } }
-          }
-        });
+          searchQueries.push({
+            text: {
+              query: term,
+              path: 'description',
+              fuzzy: { maxEdits: 1 },
+              score: { boost: { value: 1 } }
+            }
+          });
+        }
       }
 
       if (searchTerms.length > 1) {
@@ -579,12 +731,21 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
         });
       }
 
+      console.log('=== MONGODB SEARCH PIPELINE DEBUG ===');
+      console.log('Total search queries:', searchQueries.length);
+      console.log('Search queries:', JSON.stringify(searchQueries, null, 2));
+      console.log('Match filters:', JSON.stringify(matchFilters, null, 2));
+
+      const minimumShouldMatch = primaryBusinessType ? 1 : Math.max(1, Math.floor(searchTerms.length * 0.5));
+      console.log('Minimum should match:', minimumShouldMatch);
+
+
       pipeline.push({
         $search: {
           index: 'business_search',
           compound: {
             should: searchQueries,
-            minimumShouldMatch: primaryBusinessType ? 1 : Math.max(1, Math.floor(searchTerms.length * 0.5))
+            minimumShouldMatch: minimumShouldMatch
           }
         }
       });
@@ -641,7 +802,106 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
     });
 
 
+    console.log('=== EXECUTING MONGODB QUERY ===');
+    console.log('Full pipeline:', JSON.stringify(pipeline, null, 2));
+
     const businesses = await Business.aggregate(pipeline).exec();
+
+    console.log('=== SEARCH RESULTS DEBUG ===');
+    console.log('Raw results count:', businesses.length);
+    if (businesses.length > 0) {
+      console.log('First 3 results:', businesses.slice(0, 3).map(b => ({
+        name: b.name,
+        sector: b.sector,
+        score: b.score
+      })));
+    }
+
+    if (primaryBusinessType === 'liquor store' && businesses.length > 0) {
+      console.log('Applying liquor store specific filtering...');
+      
+      const liquorMatches = [];
+      const otherMatches = [];
+      
+      for (const business of businesses) {
+        const nameLC = business.name.toLowerCase();
+        const descLC = business.description ? business.description.toLowerCase() : '';
+        const businessText = `${nameLC} ${descLC}`;
+        
+        // Strong indicators for liquor stores
+        const liquorKeywords = ['liquor', 'alcohol', 'wine', 'beer', 'spirits'];
+        const hasLiquorKeywords = liquorKeywords.some(keyword => 
+          businessText.includes(keyword)
+        );
+        
+        // Exclude non-liquor businesses
+        const excludeKeywords = ['clothing', 'amazon', 'design', 'style', 'fashion', 'apparel'];
+        const hasExcludeKeywords = excludeKeywords.some(keyword => 
+          businessText.includes(keyword)
+        );
+        
+        if (hasLiquorKeywords && !hasExcludeKeywords) {
+          liquorMatches.push(business);
+        } else if (!hasExcludeKeywords) {
+          // Only add if it doesn't have exclude keywords but reduce score
+          business.score = business.score * 0.1;
+          otherMatches.push(business);
+        }
+      }
+      
+      console.log('Liquor matches found:', liquorMatches.length);
+      console.log('Other matches found:', otherMatches.length);
+      
+      // Prioritize liquor matches
+      businesses.length = 0;
+      businesses.push(...liquorMatches, ...otherMatches);
+    }
+
+    if (primaryBusinessType === 'convenience store' && businesses.length > 0) {
+      console.log('Applying convenience store specific filtering...');
+      
+      const convenienceMatches = [];
+      const otherMatches = [];
+      
+      for (const business of businesses) {
+        const nameLC = business.name.toLowerCase();
+        const descLC = business.description ? business.description.toLowerCase() : '';
+        const businessText = `${nameLC} ${descLC}`;
+        
+        // Strong indicators for convenience stores
+        const convenienceKeywords = ['convenience', 'c-store', 'corner store', 'mini mart', 'quick stop', 'market'];
+        const hasConvenienceKeywords = convenienceKeywords.some(keyword => 
+          businessText.includes(keyword)
+        );
+        
+        // Gas stations often have convenience stores
+        const gasStationKeywords = ['gas', 'fuel', 'station', 'petrol'];
+        const hasGasKeywords = gasStationKeywords.some(keyword => 
+          businessText.includes(keyword)
+        );
+        
+        // Exclude non-convenience businesses
+        const excludeKeywords = ['amazon', 'lighting', 'pizza', 'clothing', 'design', 'style', 'fashion', 'apparel', 'online'];
+        const hasExcludeKeywords = excludeKeywords.some(keyword => 
+          businessText.includes(keyword)
+        );
+        
+        if ((hasConvenienceKeywords || hasGasKeywords) && !hasExcludeKeywords) {
+          convenienceMatches.push(business);
+        } else if (!hasExcludeKeywords && business.sector === 'Retail') {
+          // Only add retail businesses that don't have exclude keywords but reduce score
+          business.score = business.score * 0.1;
+          otherMatches.push(business);
+        }
+      }
+      
+      console.log('Convenience matches found:', convenienceMatches.length);
+      console.log('Other matches found:', otherMatches.length);
+      
+      // Prioritize convenience matches
+      businesses.length = 0;
+      businesses.push(...convenienceMatches, ...otherMatches);
+    }
 
     if (primaryBusinessType && businesses.length > 0) {
       const primaryMatches = [];
@@ -650,14 +910,26 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       for (const business of businesses) {
         const nameLC = business.name.toLowerCase();
         const descLC = business.description ? business.description.toLowerCase() : '';
-        const isGasStation = nameLC.includes('gas station') || nameLC.includes('gas');
-        const isCoffeeShop = nameLC.includes('coffee shop') || nameLC.includes('coffee');
-        const isLiquorStore = nameLC.includes('liquor') || nameLC.includes('alcohol');
-        const isRestaurant = nameLC.includes('restaurant') || business.sector === 'Food & Beverage';
+        const businessText = `${nameLC} ${descLC}`;
         
         let isPrimaryMatch = false;
         
+        // Get semantic keywords for the primary business type
+        const keywords = semanticKeywords[primaryBusinessType] || [primaryBusinessType];
+        
+        // Check if business matches any of the semantic keywords
+        const hasKeywordMatch = keywords.some(keyword => 
+          businessText.includes(keyword.toLowerCase())
+        );
+        
+        // Check sector match
+        const expectedSector = sectorMapping[primaryBusinessType];
+        const hasSectorMatch = expectedSector && business.sector === expectedSector;
+        
         if (primaryBusinessType === 'coffee shop' || primaryBusinessType === 'coffee') {
+          const isGasStation = nameLC.includes('gas station') || nameLC.includes('gas');
+          const isCoffeeShop = nameLC.includes('coffee shop') || nameLC.includes('coffee');
+          
           if (isCoffeeShop && !isGasStation && (business.sector === 'Food & Beverage' || nameLC.includes('cafe'))) {
             isPrimaryMatch = true;
           } else if (isCoffeeShop && isGasStation) {
@@ -666,7 +938,31 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
             business.score = business.score * 0.1;
           }
         }
+        else if (primaryBusinessType === 'barber shop' || primaryBusinessType === 'barber' || 
+                primaryBusinessType === 'hair salon' || primaryBusinessType === 'salon' ||
+                primaryBusinessType === 'beauty salon' || primaryBusinessType === 'cosmetics' ||
+                primaryBusinessType === 'beauty') {
+          if (hasKeywordMatch && (hasSectorMatch || business.sector === 'Services')) {
+            isPrimaryMatch = true;
+          } else if (hasKeywordMatch) {
+            business.score = business.score * 0.7; // Partial match
+          } else {
+            business.score = business.score * 0.1; // Poor match
+          }
+        }
+        else if (primaryBusinessType === 'clothing store' || primaryBusinessType === 'clothing' ||
+                primaryBusinessType === 'apparel' || primaryBusinessType === 'fashion' ||
+                primaryBusinessType === 'boutique') {
+          if (hasKeywordMatch && (hasSectorMatch || business.sector === 'Retail')) {
+            isPrimaryMatch = true;
+          } else if (hasKeywordMatch) {
+            business.score = business.score * 0.7; // Partial match
+          } else {
+            business.score = business.score * 0.1; // Poor match
+          }
+        }
         else if (primaryBusinessType === 'liquor store') {
+          const isLiquorStore = nameLC.includes('liquor') || nameLC.includes('alcohol');
           if (isLiquorStore && (business.sector === 'Retail' || nameLC.includes('liquor'))) {
             isPrimaryMatch = true;
           } else if (!isLiquorStore) {
@@ -674,6 +970,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           }
         }
         else if (primaryBusinessType === 'restaurant') {
+          const isRestaurant = nameLC.includes('restaurant') || business.sector === 'Food & Beverage';
+          const isGasStation = nameLC.includes('gas station') || nameLC.includes('gas');
           if (isRestaurant && !isGasStation) {
             isPrimaryMatch = true;
           } else if (!isRestaurant) {
@@ -681,8 +979,17 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           }
         }
         else {
-          isPrimaryMatch = true;
+          // For other business types, use semantic matching
+          if (hasKeywordMatch && hasSectorMatch) {
+            isPrimaryMatch = true;
+          } else if (hasKeywordMatch || hasSectorMatch) {
+            business.score = business.score * 0.7; // Partial match
+            isPrimaryMatch = true;
+          } else {
+            business.score = business.score * 0.3; // Weak match
+          }
         }
+        
         if (isPrimaryMatch) {
           primaryMatches.push(business);
         } else {
@@ -726,6 +1033,20 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
           filteredBusinesses = businesses;
         }
       }
+    }
+
+    console.log('=== FINAL RESULTS ===');
+    console.log('Final filtered results count:', filteredBusinesses.length);
+    console.log('Final detected business type:', primaryBusinessType);
+    console.log('Final detected sector:', detectedSector);
+    console.log('Will use semantic keywords:', semanticKeywords[primaryBusinessType] || 'none');
+
+    if (filteredBusinesses.length > 0) {
+      console.log('Top 3 final results:', filteredBusinesses.slice(0, 3).map(b => ({
+        name: b.name,
+        sector: b.sector,
+        score: b.score
+      })));
     }
 
     res.status(200).json(filteredBusinesses);
