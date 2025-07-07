@@ -131,6 +131,52 @@ const extractMetricsFromDescription = async (description) => {
   return uniqueMetrics;
 };
 
+const checkUsageLimit = (type) => {
+  return async (req, res, next) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+      const User = require('../../models/users');
+      const user = await User.findById(userId);
+      
+      if (!user) return res.status(404).json({ message: 'User not found' });
+
+      const now = new Date();
+      const lastReset = new Date(user.usage.lastResetDate);
+      if (now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
+        user.usage.searches = 0;
+        user.usage.aiAnalyses = 0;
+        user.usage.bizgptQueries = 0;
+        user.usage.lastResetDate = now;
+        await user.save();
+      }
+
+      if (user.plan.name === 'Free') {
+        const limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
+        if (user.usage[type] >= limits[type]) {
+          return res.status(429).json({ 
+            message: `Free plan limit reached. You've used ${user.usage[type]}/${limits[type]} ${type} this month.`,
+            upgradeRequired: true,
+            usageType: type
+          });
+        }
+      }
+
+      req.user.usage = user.usage;
+      next();
+    } catch (error) {
+      console.error('Usage check error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  };
+};
+
+const incrementUsage = async (userId, type) => {
+  const User = require('../../models/users');
+  await User.findByIdAndUpdate(userId, { $inc: { [`usage.${type}`]: 1 } });
+};
+
 // Generate suggestions using OpenAI and filter against businesses collection
 router.get('/suggest', authMiddleware, async (req, res) => {
   try {
@@ -249,7 +295,7 @@ router.get('/search', authMiddleware, async (req, res) => {
 });
 
 // AI-powered relevance search
-router.get('/ai-search', authMiddleware, async (req, res) => {
+router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) {
@@ -1049,6 +1095,8 @@ router.get('/ai-search', authMiddleware, async (req, res) => {
       })));
     }
 
+    await incrementUsage(req.user.id, 'searches');
+
     res.status(200).json(filteredBusinesses);
   } catch (error) {
     console.error('AI search error:', error);
@@ -1231,7 +1279,7 @@ router.post('/check-matches', async (req, res) => {
 });
 
 // Generate SWOT analysis and benchmarks
-router.post('/swot-analysis', authMiddleware, async (req, res) => {
+router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), async (req, res) => {
   try {
     const { businessId } = req.body;
     if (!businessId) return res.status(400).json({ message: 'Business ID required' });
@@ -1310,6 +1358,9 @@ router.post('/swot-analysis', authMiddleware, async (req, res) => {
           ...(business.cashFlow ? [{ key: 'Cash Flow', value: `$${business.cashFlow.toLocaleString()}` }] : [])
         ];
       }
+
+      // Increment usage counter
+      await incrementUsage(req.user.id, 'aiAnalyses');
 
       return res.status(200).json({
         businessName: business.name,
@@ -1813,7 +1864,7 @@ const createBusinessReference = (business) => {
 };
 
 // BizGPT chat endpoint
-router.post('/bizgpt', authMiddleware, async (req, res) => {
+router.post('/bizgpt', authMiddleware, checkUsageLimit('bizgptQueries'), async (req, res) => {
   try {
     const { question, businessId } = req.body;
     if (!question) {
@@ -2002,6 +2053,8 @@ router.post('/bizgpt', authMiddleware, async (req, res) => {
       });
     }
 
+    await incrementUsage(req.user.id, 'bizgptQueries');
+
     res.status(200).json({ 
       answer,
       businessReferences,
@@ -2038,6 +2091,99 @@ router.post('/contact', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Contact form error:', error);
     res.status(500).json({ error: 'Failed to send message' });
+  }
+});
+
+// Get user usage stats
+router.get('/usage', authMiddleware, async (req, res) => {
+  try {
+    const User = require('../../models/users');
+    const user = await User.findById(req.user.id);
+    
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Reset usage if it's a new month
+    const now = new Date();
+    const lastReset = new Date(user.usage.lastResetDate);
+    if (now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
+      user.usage.searches = 0;
+      user.usage.aiAnalyses = 0;
+      user.usage.bizgptQueries = 0;
+      user.usage.lastResetDate = now;
+      await user.save();
+    }
+
+    const limits = user.plan.name === 'Free' ? { searches: 3, aiAnalyses: 3, bizgptQueries: 3 } : null;
+    
+    res.status(200).json({
+      plan: user.plan,
+      usage: user.usage,
+      limits
+    });
+  } catch (error) {
+    console.error('Usage fetch error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create Stripe checkout session
+router.post('/create-checkout-session', authMiddleware, async (req, res) => {
+  try {
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    const User = require('../../models/users');
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [
+        {
+          price: process.env.STRIPE_PRICE_ID,
+          quantity: 1,
+        },
+      ],
+      customer_email: user.email,
+      success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.CLIENT_URL}/your-plan`,
+      metadata: {
+        userId: user._id.toString(),
+      },
+    });
+
+    res.status(200).json({ sessionId: session.id });
+  } catch (error) {
+    console.error('Stripe session error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Handle successful payment
+router.post('/payment-success', authMiddleware, async (req, res) => {
+  try {
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    const User = require('../../models/users');
+    const { sessionId } = req.body;
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    
+    if (session.payment_status === 'paid') {
+      const userId = session.metadata.userId;
+      await User.findByIdAndUpdate(userId, {
+        'plan.name': 'Pro',
+        'plan.price': 79.99,
+        'plan.stripeCustomerId': session.customer,
+        'plan.stripeSubscriptionId': session.subscription
+      });
+      
+      res.status(200).json({ message: 'Payment successful, plan upgraded!' });
+    } else {
+      res.status(400).json({ message: 'Payment not completed' });
+    }
+  } catch (error) {
+    console.error('Payment success error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

@@ -47,7 +47,15 @@ const userSchema = new Schema({
   },
   plan: {
     name: { type: String, default: 'Free' },
-    price: { type: Number, default: 0 }
+    price: { type: Number, default: 0 },
+    stripeCustomerId: { type: String, default: null },
+    stripeSubscriptionId: { type: String, default: null }
+  },
+  usage: {
+    searches: { type: Number, default: 0 },
+    aiAnalyses: { type: Number, default: 0 },
+    bizgptQueries: { type: Number, default: 0 },
+    lastResetDate: { type: Date, default: Date.now }
   },
   billingInfo: {
     cardNumber: { type: String, default: '' },
