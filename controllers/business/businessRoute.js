@@ -307,9 +307,10 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
     const booleanFilters = [];
 
     if (query.includes('sba preapproved') || query.includes('sba approved') ||
-        (query.includes('sba') && (query.includes('preapproved') || query.includes('approved')))) {
+        (query.includes('sba') && (query.includes('preapproved') || query.includes('approved'))) ||
+        query.includes('sba')) {
       booleanFilters.push({ sbaPreApproved: true });
-      query = query.replace(/\b(sba\s*(preapproved|approved)|preapproved|approved)\b/gi, '').trim();
+      query = query.replace(/\b(sba\s*(preapproved|approved)|preapproved|approved|sba)\b/gi, '').trim();
     }
     if (query.includes('distressed')) {
       booleanFilters.push({ distressed: true });
