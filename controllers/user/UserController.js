@@ -36,15 +36,15 @@ module.exports = {
       const user = await User.findOne({ email });
       if (!user) {
         console.log('User not found:', email);
-        return res.status(200).json({
+        return res.status(401).json({
           status: 401,
           success: false,
-          message: 'Invalid user'
+          message: 'User not found'
         });
       }
       if (!user.isVerified) {
         console.log('User not verified:', email);
-        return res.status(200).json({
+        return res.status(403).json({
           status: 403,
           success: false,
           message: 'Please verify your email'
@@ -55,7 +55,7 @@ module.exports = {
       console.log('Password match:', isMatch);
       if (!isMatch) {
         console.log('Invalid password for:', email);
-        return res.status(200).json({
+        return res.status(401).json({
           status: 401,
           success: false,
           message: 'Invalid password'
