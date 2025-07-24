@@ -49,7 +49,10 @@ const userSchema = new Schema({
     name: { type: String, default: 'Free' },
     price: { type: Number, default: 0 },
     stripeCustomerId: { type: String, default: null },
-    stripeSubscriptionId: { type: String, default: null }
+    stripeSubscriptionId: { type: String, default: null },
+    isAppSumo: { type: Boolean, default: false },
+    appSumoTier: { type: Number, default: null },
+    appSumoCode: { type: String, default: null }
   },
   usage: {
     searches: { type: Number, default: 0 },

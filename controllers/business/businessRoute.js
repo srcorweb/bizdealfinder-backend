@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Business = require('../../models/business');
 const SavedDeal = require('../../models/SavedDeal');
 const UserPreferences = require('../../models/userPreferences');
+const AppSumoCode = require('../../models/appSumoCode');
 const { OpenAI } = require('openai');
 const { processSearchQuery } = require('../../service/searchServices');
 const { authMiddleware } = require('../../requests/middleware/AuthMiddleware');
@@ -152,15 +153,24 @@ const checkUsageLimit = (type) => {
         await user.save();
       }
 
+      let limits = null;
+      
       if (user.plan.name === 'Free') {
-        const limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
-        if (user.usage[type] >= limits[type]) {
-          return res.status(429).json({ 
-            message: `Free plan limit reached. You've used ${user.usage[type]}/${limits[type]} ${type} this month.`,
-            upgradeRequired: true,
-            usageType: type
-          });
+        limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
+      } else if (user.plan.isAppSumo) {
+        if (user.plan.appSumoTier === 1) {
+          limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3 };
+        } else if (user.plan.appSumoTier === 2) {
+          limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10 };
         }
+      }
+      
+      if (limits && user.usage[type] >= limits[type]) {
+        return res.status(429).json({ 
+          message: `${user.plan.name} limit reached. You've used ${user.usage[type]}/${limits[type]} ${type} this month.`,
+          upgradeRequired: !user.plan.isAppSumo,
+          usageType: type
+        });
       }
 
       req.user.usage = user.usage;
@@ -814,8 +824,9 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
       pipeline.push({ $sort: { _id: 1 } });
     }
 
-    const limit = ['location', 'boolean', 'price'].includes(queryType) ? 200 : 50;
-    pipeline.push({ $limit: limit });
+    // const limit = ['location', 'boolean', 'price'].includes(queryType) ? 200 : 50;
+    // pipeline.push({ $limit: limit });
+    pipeline.push({ $limit: 2000 });
 
     pipeline.push({
       $project: {
@@ -2114,7 +2125,17 @@ router.get('/usage', authMiddleware, async (req, res) => {
       await user.save();
     }
 
-    const limits = user.plan.name === 'Free' ? { searches: 3, aiAnalyses: 3, bizgptQueries: 3 } : null;
+    let limits = null;
+    
+    if (user.plan.name === 'Free') {
+      limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
+    } else if (user.plan.isAppSumo) {
+      if (user.plan.appSumoTier === 1) {
+        limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3 };
+      } else if (user.plan.appSumoTier === 2) {
+        limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10 };
+      }
+    }
     
     res.status(200).json({
       plan: user.plan,
@@ -2184,6 +2205,136 @@ router.post('/payment-success', authMiddleware, async (req, res) => {
     }
   } catch (error) {
     console.error('Payment success error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/redeem-appsumo', authMiddleware, async (req, res) => {
+  try {
+    const { code } = req.body;
+    const userId = req.user?.id;
+    
+    if (!code) {
+      return res.status(400).json({ message: 'Redemption code is required' });
+    }
+    
+    if (!userId) {
+      return res.status(401).json({ message: 'User must be logged in to redeem code' });
+    }
+
+    const User = require('../../models/users');
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (user.plan.isAppSumo) {
+      return res.status(400).json({ message: 'You have already redeemed an AppSumo code' });
+    }
+
+    const appSumoCode = await AppSumoCode.findOne({ code: code.toUpperCase() });
+    
+    if (!appSumoCode) {
+      return res.status(404).json({ message: 'Invalid redemption code' });
+    }
+    
+    if (appSumoCode.isRedeemed) {
+      return res.status(400).json({ message: 'This code has already been redeemed' });
+    }
+
+    appSumoCode.isRedeemed = true;
+    appSumoCode.redeemedBy = userId;
+    appSumoCode.redeemedAt = new Date();
+    await appSumoCode.save();
+
+    const tierNames = { 1: 'AppSumo Tier 1', 2: 'AppSumo Tier 2', 3: 'AppSumo Tier 3' };
+    user.plan.name = tierNames[appSumoCode.tier];
+    user.plan.isAppSumo = true;
+    user.plan.appSumoTier = appSumoCode.tier;
+    user.plan.appSumoCode = code.toUpperCase();
+    
+    user.usage.searches = 0;
+    user.usage.aiAnalyses = 0;
+    user.usage.bizgptQueries = 0;
+    user.usage.lastResetDate = new Date();
+    
+    await user.save();
+
+    res.status(200).json({ 
+      message: 'Code redeemed successfully!',
+      tier: appSumoCode.tier,
+      planName: tierNames[appSumoCode.tier]
+    });
+
+  } catch (error) {
+    console.error('AppSumo redemption error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/validate-appsumo-code', async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    if (!code) {
+      return res.status(400).json({ message: 'Code is required' });
+    }
+
+    const appSumoCode = await AppSumoCode.findOne({ code: code.toUpperCase() });
+    
+    if (!appSumoCode) {
+      return res.status(404).json({ message: 'Invalid code', valid: false });
+    }
+    
+    if (appSumoCode.isRedeemed) {
+      return res.status(400).json({ message: 'Code already redeemed', valid: false });
+    }
+
+    const tierNames = { 1: 'AppSumo Tier 1', 2: 'AppSumo Tier 2', 3: 'AppSumo Tier 3' };
+    res.status(200).json({ 
+      valid: true,
+      tier: appSumoCode.tier,
+      planName: tierNames[appSumoCode.tier]
+    });
+
+  } catch (error) {
+    console.error('Code validation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/admin/appsumo-stats', authMiddleware, async (req, res) => {
+  try {
+    const stats = await AppSumoCode.aggregate([
+      {
+        $group: {
+          _id: { tier: '$tier', redeemed: '$isRedeemed' },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $group: {
+          _id: '$_id.tier',
+          total: { $sum: '$count' },
+          redeemed: {
+            $sum: {
+              $cond: ['$_id.redeemed', '$count', 0]
+            }
+          },
+          available: {
+            $sum: {
+              $cond: ['$_id.redeemed', 0, '$count']
+            }
+          }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    res.status(200).json(stats);
+  } catch (error) {
+    console.error('Admin stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
