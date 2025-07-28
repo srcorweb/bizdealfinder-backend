@@ -112,8 +112,8 @@ const scrapeBusinesses = async () => {
     For BizBuySell, prepend "https://www.bizbuysell.com" to relative URLs. For DealStream, prepend "https://dealstream.com". For Sunbelt Network, prepend "https://www.sunbeltnetwork.com". For BusinessForSale, prepend "https://us.businessesforsale.com". For Flippa, prepend "https://flippa.com". Discard non-USA listings for DealStream, Sunbelt Network, BusinessForSale, and Flippa by checking if location includes a US state or "United States". Use defaults: 0 for numbers, false for booleans, "Unknown" for strings, "Services" for sector only as a last resort. Return JSON only, no markdown. Log the extracted JSON for debugging.`;
 
     const allListings = [];
-    const maxPages = 50;
-    const maxRetries = 3;
+    const maxPages = 1;
+    const maxRetries = 1;
 
     // Array of site scraping functions to process sequentially
     const siteScrapers = [
@@ -377,74 +377,58 @@ const scrapeBusinesses = async () => {
         name: 'BizBuySell',
         scrape: async () => {
           for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/?q=az1zYmE%3D' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/?q=az1zYmE%3D`;
-            console.log(`Fetching BizBuySell SBA page ${pageNum}: ${url}`);
+            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/`;
+            console.log(`Fetching BizBuySell page ${pageNum}: ${url}`);
+            try {
+              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+              const safariAgents = [
+                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+              ];
+              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+              const start = Date.now();
+              const response = await axios.get(url, {
+                httpsAgent,
+                timeout: 30000,
+                headers: { 'User-Agent': userAgent }
+              });
+              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
 
-            let attempt = 0;
-            let success = false;
+              const $ = cheerio.load(response.data);
+              const snippets = [];
+              $('app-listing-diamond').each((_, el) => {
+                const detailUrl = $(el).find('a').attr('href') || '';
+                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+                snippets.push({ html: $.html(el), detailUrl: fullUrl });
+              });
+              console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
 
-            while (attempt < maxRetries && !success) {
-              try {
-                console.log(`Attempt ${attempt + 1}/${maxRetries} for page ${pageNum}`);
-                const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
-                const safariAgents = [
-                  'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
-                ];
-                const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
-                const start = Date.now();
-                const response = await axios.get(url, {
-                  httpsAgent,
-                  timeout: 30000,
-                  headers: { 'User-Agent': userAgent }
-                });
-                const elapsed = ((Date.now() - start) / 1000).toFixed(4);
-                console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
-
-                const $ = cheerio.load(response.data);
-                const snippets = [];
-                $('app-listing-diamond').each((_, el) => {
-                  const detailUrl = $(el).find('a').attr('href') || '';
-                  const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
-                  snippets.push({ html: $.html(el), detailUrl: fullUrl });
-                });
-                console.log(`Found ${snippets.length} BizBuySell SBA listings on page ${pageNum}`);
-                success = true;
-
-                for (const { html, detailUrl } of snippets) {
-                  try {
-                    const aiResp = await openai.chat.completions.create({
-                      model: 'gpt-4o-mini',
-                      messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: html }
-                      ],
-                      response_format: { type: 'json_object' }
-                    });
-                    const listing = JSON.parse(aiResp.choices[0].message.content);
-                    listing.scrapedData.source = 'BizBuySell';
-                    listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-                    listing.businessId = detailUrl || listing.businessId;
-                    console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
-                    allListings.push(listing);
-                  } catch (err) {
-                    console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
-                  }
+              for (const { html, detailUrl } of snippets) {
+                try {
+                  const aiResp = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: html }
+                    ],
+                    response_format: { type: 'json_object' }
+                  });
+                  const listing = JSON.parse(aiResp.choices[0].message.content);
+                  listing.scrapedData.source = 'BizBuySell';
+                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+                  listing.businessId = detailUrl || listing.businessId;
+                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                  allListings.push(listing);
+                } catch (err) {
+                  console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
                 }
-              } catch (err) {
-                console.error(`Error fetching BizBuySell SBA page ${pageNum}, attempt ${attempt + 1}:`, err.message);
-                if (attempt < maxRetries - 1) {
-                  console.log(`Retrying BizBuySell SBA page ${pageNum} with exponential backoff...`);
-                  await sleep(5000 * Math.pow(2, attempt));
-                } else {
-                  console.log(`Max retries reached for BizBuySell SBA page ${pageNum}. Continuing to next page...`);
-                  break;
-                }
-                attempt++;
               }
+            } catch (err) {
+              console.error(`Error fetching BizBuySell page ${pageNum}:`, err.message);
+              console.log(`Skipping to next site due to BizBuySell page ${pageNum} failure`);
+              throw new Error(`Failed to scrape BizBuySell page ${pageNum}`);
             }
-            if (success) {
-              await sleep(Math.random() * 3000 + 2000);
-            }
+            await sleep(5000);
           }
         }
       },
@@ -599,13 +583,8 @@ const scrapeBusinesses = async () => {
                   listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                   listing.businessId = detailUrl || listing.businessId;
                   listing.sbaPreApproved = true;
-                  console.log(`Extracted SBA listing ${allListings.length + 1}: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+                  console.log(`Extracted SBA listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
                   allListings.push(listing);
-
-                  if (allListings.filter(l => l.sbaPreApproved).length >= 1000) {
-                    console.log('Reached 1000 SBA listings target, stopping...');
-                    return;
-                  }
                 } catch (err) {
                   console.error(`BizBuySell SBA parse error on page ${pageNum}:`, err.message);
                 }
@@ -628,9 +607,7 @@ const scrapeBusinesses = async () => {
             try {
               const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
               const safariAgents = [
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
               ];
               const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
               const start = Date.now();
