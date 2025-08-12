@@ -47,6 +47,32 @@ async function getFreeProxy() {
   }
 }
 
+// Function to check if business already exists in database
+const checkBusinessExists = async (businessId) => {
+  try {
+    const exists = await Business.findOne({ businessId }).select('businessId').lean();
+    return !!exists;
+  } catch (err) {
+    console.error('Error checking business existence:', err.message);
+    return false;
+  }
+};
+
+// Function to batch check multiple businesses
+const batchCheckBusinessExists = async (businessIds) => {
+  try {
+    const existingBusinesses = await Business.find({ 
+      businessId: { $in: businessIds } 
+    }).select('businessId').lean();
+    
+    const existingIds = new Set(existingBusinesses.map(b => b.businessId));
+    return businessIds.map(id => existingIds.has(id));
+  } catch (err) {
+    console.error('Error batch checking business existence:', err.message);
+    return businessIds.map(() => false);
+  }
+};
+
 const scrapeBusinesses = async () => {
   let browser;
   try {
@@ -55,7 +81,7 @@ const scrapeBusinesses = async () => {
     await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000 });
     console.log(`MongoDB connected to ${mongoose.connection.host}:${mongoose.connection.port}/${mongoose.connection.db.databaseName}`);
 
-    const systemPrompt = `Extract structured data from HTML of a business listing or detail page. Return a JSON object with:
+    const systemPrompt = `Extract structured data from HTML of a business listing detail page. This is a DETAIL PAGE scrape, so extract comprehensive information. Return a JSON object with:
     - businessId: string (full detail URL, e.g., "https://www.bizbuysell.com/...", prepend "https://www.bizbuysell.com" for BizBuySell, "https://dealstream.com" for DealStream, "https://www.sunbeltnetwork.com" for Sunbelt Network, "https://us.businessesforsale.com" for BusinessForSale, "https://flippa.com" for Flippa),
     - name: string (business title),
     - price: number (USD, 0 if "Not Disclosed"/"On request"/"N/A"/"Confidential", min of ranges, e.g., "$100k-$200k" -> 100000, convert "m" to millions, e.g., "$30m" -> 30000000),
@@ -93,21 +119,28 @@ const scrapeBusinesses = async () => {
       - "Premier Platform Powersports Dealer Group" -> Retail
       - "Car Rental Business for Sale, Auto Repair / Towing / Dealership" -> Retail
       Default to Services only as a last resort when no sector is reasonably inferred.
-    - description: string (first 500 characters of the listing description, default "No description available" if missing),
+    - description: string (full business description from detail page, up to 2000 characters, default "No description available" if missing),
+    - sourceContent: {
+        content: string (full HTML content for caching, truncated to 50000 chars),
+        scrapedAt: Date (current timestamp),
+        financials: array of objects with key/value pairs for financial metrics like [{"key": "Asking Price", "value": "$175,000"}, {"key": "Revenue", "value": "$519,928"}, {"key": "Cash Flow", "value": "$99,812"}, {"key": "Down Payment", "value": "$50,000"}, {"key": "EBITDA", "value": "$120,000"}],
+        detailedInfo: array of objects with key/value pairs for business details like [{"key": "Years Established", "value": "15"}, {"key": "Employees", "value": "8"}, {"key": "Hours of Operation", "value": "Mon-Fri 9-5"}]
+      },
     - scrapedData: { source: string, priceText: string, revenueText: string, detailUrl: string }.
 
-    For cash flow extraction:
-    - Sunbelt Network: Extract from ".latestBusinesses__values--box" with span "Cash Flow" (e.g., "$9m").
-    - BizBuySell: Extract from "app-listing-diamond" or detail page ".financials p" with title "Cash Flow" (e.g., "Cash Flow: $XXX").
-    - Flippa: Extract from "#properties-summary" with "Monthly Profit" (e.g., "USD $4,417 /mo").
-    - DealStream: Extract from ".list-group-item.post" with "Cash Flow" (e.g., "Cash Flow: $XXX").
-    - BusinessForSale: Extract from ".result" with "Cash Flow" (e.g., "Cash Flow: $XXX").
-    Treat cash flow as monthly unless explicitly annual (e.g., "per year"). Convert "m" to millions, "k" to thousands.
+    IMPORTANT: Extract comprehensive financial and business details from the FULL DETAIL PAGE content. Look for:
+    - Financial sections with asking price, revenue, cash flow, EBITDA, down payment, etc.
+    - Business operation details like years established, employees, hours, lease terms
+    - Complete business description and opportunity details
+    - Equipment, inventory, and asset information
 
-    For Flippa listings, process both summary (div[id^="listing-"]) and detail page sections:
-    - Summary: Extract title, price, description.
-    - Detail: Extract from "#properties-summary" (e.g., Monthly Profit, Revenue) and description text (first 500 characters).
-    Truncate combined HTML to 50,000 characters to avoid token limits. Focus on financials and description.
+    For cash flow extraction:
+    - Sunbelt Network: Extract from financial sections and ".latestBusinesses__values--box" 
+    - BizBuySell: Extract from ".financials p" sections and detail financial tables
+    - Flippa: Extract from "#properties-summary" and financial metrics sections
+    - DealStream: Extract from financial information sections and deal details
+    - BusinessForSale: Extract from financial details and business information sections
+    Treat cash flow as monthly unless explicitly annual. Convert "m" to millions, "k" to thousands.
 
     For BizBuySell, prepend "https://www.bizbuysell.com" to relative URLs. For DealStream, prepend "https://dealstream.com". For Sunbelt Network, prepend "https://www.sunbeltnetwork.com". For BusinessForSale, prepend "https://us.businessesforsale.com". For Flippa, prepend "https://flippa.com". Discard non-USA listings for DealStream, Sunbelt Network, BusinessForSale, and Flippa by checking if location includes a US state or "United States". Use defaults: 0 for numbers, false for booleans, "Unknown" for strings, "Services" for sector only as a last resort. Return JSON only, no markdown. Log the extracted JSON for debugging.`;
 
@@ -198,13 +231,64 @@ const scrapeBusinesses = async () => {
                   });
                   console.log(`Found ${bfsSnippets.length} BusinessForSale listings on page ${pageNum}`);
 
-                  for (const { html, detailUrl } of bfsSnippets) {
+                  const allDetailUrls = bfsSnippets.map(snippet => snippet.detailUrl);
+                  const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+                  let processedCount = 0;
+                  let skippedCount = 0;
+
+
+                  for (let i = 0; i < bfsSnippets.length; i++) {
+                    const { html, detailUrl } = bfsSnippets[i];
+                    const businessExists = existsResults[i];
+                    
+                    if (businessExists) {
+                      console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+                      skippedCount++;
+                      continue;
+                    }
+
+                    let detailPage;
                     try {
+                      detailPage = await browser.newPage();
+                      const userAgents = [
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
+                      ];
+                      const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
+                      await detailPage.setUserAgent(userAgent);
+                      await detailPage.setViewport({ width: 1280, height: 800 });
+
+                      await detailPage.evaluateOnNewDocument(() => {
+                        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                        window.chrome = { runtime: {} };
+                      });
+                      
+                      console.log(`Fetching BusinessForSale detail page: ${detailUrl}`);
+                      await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+                      
+                      await detailPage.evaluate(() => {
+                        window.scrollTo(0, Math.random() * 1000);
+                        const x = Math.random() * 500;
+                        const y = Math.random() * 500;
+                        document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y }));
+                      });
+                      await sleep(2000 + Math.random() * 3000);
+                      
+                      const detailContent = await detailPage.content();
+                      
+                      let processedContent = detailContent;
+                      if (processedContent.length > 50000) {
+                        processedContent = processedContent.substring(0, 50000) + '...';
+                      }
+
                       const aiResp = await openai.chat.completions.create({
                         model: 'gpt-4o-mini',
                         messages: [
                           { role: 'system', content: systemPrompt },
-                          { role: 'user', content: html }
+                          { role: 'user', content: processedContent }
                         ],
                         response_format: { type: 'json_object' }
                       });
@@ -212,10 +296,25 @@ const scrapeBusinesses = async () => {
                       listing.scrapedData.source = 'BusinessForSale';
                       listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                       listing.businessId = detailUrl || listing.businessId;
-                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                      if (!listing.sourceContent) {
+                        listing.sourceContent = {
+                          content: detailContent,
+                          scrapedAt: new Date(),
+                          financials: [],
+                          detailedInfo: []
+                        };
+                      }
+
+                      console.log(`Extracted BusinessForSale listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
                       allListings.push(listing);
+
+                      processedCount++;
+                      await sleep(3000 + Math.random() * 2000);
                     } catch (err) {
-                      console.error(`BusinessForSale parse error on page ${pageNum}:`, err.message);
+                      console.error(`BusinessForSale parse error for ${detailUrl}:`, err.message);
+                    } finally {
+                      if (detailPage) await detailPage.close();
                     }
                   }
                 } catch (err) {
@@ -328,13 +427,40 @@ const scrapeBusinesses = async () => {
                   });
                   console.log(`Found ${dsSnippets.length} DealStream listings on page ${pageNum}`);
 
-                  for (const { html, detailUrl } of dsSnippets) {
+                  const allDetailUrls = dsSnippets.map(snippet => snippet.detailUrl);
+                  const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+                  let processedCount = 0;
+                  let skippedCount = 0;
+
+                  for (let i = 0; i < dsSnippets.length; i++) {
+                    const { html, detailUrl } = dsSnippets[i];
+                    const businessExists = existsResults[i];
+                    
+                    if (businessExists) {
+                      console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+                      skippedCount++;
+                      continue;
+                    }
+
+                    let detailPage;
                     try {
+                      detailPage = await browser.newPage();
+                      await detailPage.setUserAgent(userAgent);
+                      await detailPage.setViewport({ width: 1280, height: 800 });
+                      console.log(`Fetching detail page: ${detailUrl}`);
+                      await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+                      const detailContent = await detailPage.content();
+                      let processedContent = detailContent;
+                      if (processedContent.length > 50000) {
+                        processedContent = processedContent.substring(0, 50000) + '...';
+                      }
+
                       const aiResp = await openai.chat.completions.create({
                         model: 'gpt-4o-mini',
                         messages: [
                           { role: 'system', content: systemPrompt },
-                          { role: 'user', content: html }
+                          { role: 'user', content: processedContent }
                         ],
                         response_format: { type: 'json_object' }
                       });
@@ -342,10 +468,24 @@ const scrapeBusinesses = async () => {
                       listing.scrapedData.source = 'DealStream';
                       listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                       listing.businessId = detailUrl || listing.businessId;
-                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                      if (!listing.sourceContent) {
+                        listing.sourceContent = {
+                          content: detailContent,
+                          scrapedAt: new Date(),
+                          financials: [],
+                          detailedInfo: []
+                        };
+                      }
+
+                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
                       allListings.push(listing);
+                      processedCount++;
+                      await sleep(3000);
                     } catch (err) {
-                      console.error(`DealStream parse error on page ${pageNum}:`, err.message);
+                      console.error(`DealStream parse error for ${detailUrl}:`, err.message);
+                    } finally {
+                      if (detailPage) await detailPage.close();
                     }
                   }
                 } catch (err) {
@@ -403,13 +543,48 @@ const scrapeBusinesses = async () => {
               });
               console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
 
-              for (const { html, detailUrl } of snippets) {
+              const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
+              const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+              let processedCount = 0;
+              let skippedCount = 0;
+
+              for (let i = 0; i < snippets.length; i++) {
+                const { html, detailUrl } = snippets[i];
+                const businessExists = existsResults[i];
+                
+                if (businessExists) {
+                  console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+                  skippedCount++;
+                  continue;
+                }
+
                 try {
+                  let detailContent = '';
+                  try {
+                    console.log(`Fetching detail page: ${detailUrl}`);
+                    processedCount++;
+                    const detailResponse = await axios.get(detailUrl, {
+                      httpsAgent,
+                      timeout: 30000,
+                      headers: { 'User-Agent': userAgent }
+                    });
+                    detailContent = detailResponse.data;
+                    console.log(`Detail page fetched successfully for ${detailUrl}`);
+                  } catch (detailErr) {
+                    console.error(`Failed to fetch detail page ${detailUrl}:`, detailErr.message);
+                    detailContent = html;
+                  }
+
+                  if (detailContent.length > 50000) {
+                    detailContent = detailContent.substring(0, 50000) + '...';
+                  }
+
                   const aiResp = await openai.chat.completions.create({
                     model: 'gpt-4o-mini',
                     messages: [
                       { role: 'system', content: systemPrompt },
-                      { role: 'user', content: html }
+                      { role: 'user', content: detailContent }
                     ],
                     response_format: { type: 'json_object' }
                   });
@@ -417,8 +592,18 @@ const scrapeBusinesses = async () => {
                   listing.scrapedData.source = 'BizBuySell';
                   listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                   listing.businessId = detailUrl || listing.businessId;
-                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                  if (!listing.sourceContent) {
+                    listing.sourceContent = {
+                      content: detailContent,
+                      scrapedAt: new Date(),
+                      financials: [],
+                      detailedInfo: []
+                    };
+                  }
+                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
                   allListings.push(listing);
+                  await sleep(2000);
                 } catch (err) {
                   console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
                 }
@@ -474,33 +659,43 @@ const scrapeBusinesses = async () => {
                   });
                   console.log(`Found ${flipSnippets.length} Flippa listings on page ${pageNum}`);
       
+                  const allDetailUrls = flipSnippets.map(snippet => snippet.detailUrl);
+                  const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+                  let processedCount = 0;
+                  let skippedCount = 0;
+
                   for (const { html, detailUrl } of flipSnippets) {
+                    const { html, detailUrl } = flipSnippets[i];
+                    const businessExists = existsResults[i];
+                    
+                    if (businessExists) {
+                      console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+                      skippedCount++;
+                      continue;
+                    }
+
                     let detailPage;
                     try {
                       detailPage = await browser.newPage();
                       await detailPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+                      await detailPage.setViewport({ width: 1280, height: 800 });
+
+                      console.log(`Fetching Flippa detail page: ${detailUrl}`);
                       await detailPage.goto(detailUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-      
-                      const detailHtml = await detailPage.content();
-                      const $ = cheerio.load(detailHtml);
-      
-                      const propertiesSummary = $('#properties-summary').html() || '';
-                      const description = $('.listing-description').text().trim().slice(0, 500) || 'No description available';
-                      const detailExtract = `
-                        <div id="properties-summary">${propertiesSummary}</div>
-                        <div class="listing-description">${description}</div>
-                      `;
-      
-                      let combinedHtml = `${html}\n<!-- Detail Page Extract -->\n${detailExtract}`;
-                      if (combinedHtml.length > 50000) {
-                        combinedHtml = combinedHtml.slice(0, 50000) + '...';
+
+                      const detailContent = await detailPage.content();
+
+                      let processedContent = detailContent;
+                      if (processedContent.length > 50000) {
+                        processedContent = processedContent.substring(0, 50000) + '...';
                       }
-      
+
                       const aiResp = await openai.chat.completions.create({
                         model: 'gpt-4o-mini',
                         messages: [
                           { role: 'system', content: systemPrompt },
-                          { role: 'user', content: combinedHtml }
+                          { role: 'user', content: processedContent }
                         ],
                         response_format: { type: 'json_object' }
                       });
@@ -508,8 +703,20 @@ const scrapeBusinesses = async () => {
                       listing.scrapedData.source = 'Flippa';
                       listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                       listing.businessId = detailUrl || listing.businessId;
-                      console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                      if (!listing.sourceContent) {
+                        listing.sourceContent = {
+                          content: detailContent,
+                          scrapedAt: new Date(),
+                          financials: [],
+                          detailedInfo: []
+                        };
+                      }
+
+                      console.log(`Extracted Flippa listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
                       allListings.push(listing);
+                      processedCount++;
+                      await sleep(4000);
                     } catch (err) {
                       console.error(`Flippa parse error for ${detailUrl} on page ${pageNum}:`, err.message);
                     } finally {
@@ -561,30 +768,226 @@ const scrapeBusinesses = async () => {
 
               const $ = cheerio.load(response.data);
               const snippets = [];
-              $('app-listing-diamond').each((_, el) => {
-                const detailUrl = $(el).find('a').attr('href') || '';
-                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
-                snippets.push({ html: $.html(el), detailUrl: fullUrl });
-              });
+
+              console.log('Checking for different listing selectors...');
+              const appListingShowcaseCount = $('app-listing-showcase').length;
+              const appListingCount = $('app-listing-diamond').length;
+              const listingItemCount = $('.listing-item').length;
+              const businessCardCount = $('.business-card').length;
+
+              console.log(`app-listing-showcase: ${appListingShowcaseCount}`);
+              console.log(`app-listing-diamond: ${appListingCount}`);
+              console.log(`listing-item: ${listingItemCount}`);
+              console.log(`business-card: ${businessCardCount}`);
+
+              const selectors = [
+                { name: 'app-listing-showcase', selector: 'app-listing-showcase' },
+                { name: 'app-listing-diamond', selector: 'app-listing-diamond' },
+                { name: 'listing-showcase', selector: '.listing-showcase' },
+                { name: 'listing-item', selector: '.listing-item' },
+                { name: 'business-card', selector: '.business-card' },
+                { name: 'result-item', selector: '.result-item' }
+              ];
+
+              let bestSelector = null;
+              let maxCount = 0;
+
+              for (const { name, selector } of selectors) {
+                const count = $(selector).length;
+                console.log(`${name}: ${count}`);
+                if (count > maxCount) {
+                  maxCount = count;
+                  bestSelector = { name, selector };
+                }
+              }
+
+              console.log(`Best selector found: ${bestSelector?.name} with ${maxCount} elements`);
+
+              const businessLinks = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
+              console.log(`Found ${businessLinks.length} direct business links`);
+
+              if (businessLinks.length > 0) {
+                console.log('Using direct business links approach');
+                bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
+                maxCount = businessLinks.length;
+              } else if (maxCount === 0) {
+                console.log('No standard selectors found, searching for elements with business links...');
+                const linkElements = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
+                console.log(`Found ${linkElements.length} business links`);
+                
+                if (linkElements.length > 0) {
+                  bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
+                  maxCount = linkElements.length;
+                }
+              }
+
+              if (bestSelector && maxCount > 0) {
+                console.log(`Using selector: ${bestSelector.name} (${bestSelector.selector})`);
+                
+                $(bestSelector.selector).each((_, el) => {
+                  let detailUrl = '';
+
+                  if (bestSelector.name === 'business-links') {
+                    detailUrl = $(el).attr('href') || '';
+                  } else if (bestSelector.name === 'app-listing-showcase') {
+                    detailUrl = $(el).find('a.showcase').attr('href') || $(el).find('a').attr('href') || '';
+                  } else {
+                    detailUrl = $(el).find('a').attr('href') || '';
+                  }
+                  
+                  if (detailUrl && (detailUrl.includes('/business-opportunity/') || detailUrl.includes('/business/'))) {
+                    const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+                    console.log(`Found valid business link: ${fullUrl}`);
+                    snippets.push({ html: $.html(el), detailUrl: fullUrl });
+                  }
+                });
+              }
+
               console.log(`Found ${snippets.length} BizBuySell SBA listings on page ${pageNum}`);
 
-              for (const { html, detailUrl } of snippets) {
+              const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
+              const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+              let processedCount = 0;
+              let skippedCount = 0;
+
+              for (let i = 0; i < snippets.length; i++) {
+                const { html, detailUrl } = snippets[i];
+                const businessExists = existsResults[i];
+                
+                if (businessExists) {
+                  console.log(`⏭️  Skipping existing SBA business: ${detailUrl}`);
+                  skippedCount++;
+                  continue;
+                }
+
                 try {
+                  let detailContent = '';
+                  try {
+                    console.log(`Fetching BizBuySell SBA detail page: ${detailUrl}`);
+                    processedCount++;
+                    const detailResponse = await axios.get(detailUrl, {
+                      httpsAgent,
+                      timeout: 30000,
+                      headers: { 'User-Agent': userAgent }
+                    });
+
+                    detailContent = detailResponse.data;
+                    console.log(`BizBuySell SBA detail page fetched successfully for ${detailUrl}`);
+
+                    const $detail = cheerio.load(detailContent);
+                    let extractedFinancials = {};
+
+                    $detail('.financials .specs p').each((_, el) => {
+                      const $el = $detail(el);
+                      const title = $el.find('.title').text().trim().toLowerCase();
+                      const value = $el.find('.normal, .price').first().text().trim();
+
+                      if (title.includes('asking price')) {
+                        extractedFinancials.askingPrice = value;
+                      } else if (title.includes('gross revenue')) {
+                        extractedFinancials.grossRevenue = value;
+                      } else if (title.includes('cash flow')) {
+                        extractedFinancials.cashFlow = value;
+                      } else if (title.includes('ebitda')) {
+                        extractedFinancials.ebitda = value;
+                      } else if (title.includes('established')) {
+                        extractedFinancials.established = value;
+                      }
+                    });
+
+                    let financialSummary = 'EXTRACTED FINANCIAL DATA:\n';
+                    Object.entries(extractedFinancials).forEach(([key, value]) => {
+                      financialSummary += `${key}: ${value}\n`;
+                    });
+                    console.log('Extracted financials:', extractedFinancials);
+                  } catch (detailErr) {
+                    console.error(`Failed to fetch BizBuySell SBA detail page ${detailUrl}:`, detailErr.message);
+                    detailContent = html;
+                  }
+
+                  let processedContent = financialSummary + '\n\n' + detailContent;
+                  if (processedContent.length > 50000) {
+                    processedContent = processedContent.substring(0, 50000) + '...';
+                  }
+
                   const aiResp = await openai.chat.completions.create({
-                    model: 'gpt-4o-mini',
+                    model: 'gpt-4o',
                     messages: [
                       { role: 'system', content: systemPrompt },
-                      { role: 'user', content: html }
+                      { role: 'user', content: `Extract business information from this HTML. Pay special attention to financial metrics like Asking Price, Gross Revenue, Cash Flow (SDE), EBITDA, and Rent:\n\n${processedContent}` }
                     ],
-                    response_format: { type: 'json_object' }
+                    response_format: { type: 'json_object' },
+                    temperature: 0.1
                   });
                   const listing = JSON.parse(aiResp.choices[0].message.content);
-                  listing.scrapedData.source = 'BizBuySell';
-                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+
+                  if ((listing.revenue === 0 || listing.cashFlow === 0) && Object.keys(extractedFinancials).length > 0) {
+                    console.log('AI extraction missed financial data, using pre-extracted values...');
+                    
+                    if (listing.revenue === 0 && extractedFinancials.grossRevenue) {
+                      const revenueValue = extractedFinancials.grossRevenue.replace(/[$,]/g, '');
+                      if (revenueValue && !isNaN(revenueValue)) {
+                        listing.revenue = parseInt(revenueValue);
+                        console.log(`Using pre-extracted revenue: $${listing.revenue}`);
+                      }
+                    }
+                    
+                    if (listing.cashFlow === 0 && extractedFinancials.cashFlow) {
+                      const cashFlowValue = extractedFinancials.cashFlow.replace(/[$,]/g, '');
+                      if (cashFlowValue && !isNaN(cashFlowValue)) {
+                        listing.cashFlow = parseInt(cashFlowValue);
+                        console.log(`Using pre-extracted cash flow: $${listing.cashFlow}`);
+                      }
+                    }
+                    
+                    if (listing.price === 0 && extractedFinancials.askingPrice) {
+                      const priceValue = extractedFinancials.askingPrice.replace(/[$,]/g, '');
+                      if (priceValue && !isNaN(priceValue)) {
+                        listing.price = parseInt(priceValue);
+                        console.log(`Using pre-extracted price: $${listing.price}`);
+                      }
+                    }
+                  }
+
+                  if (!listing.scrapedData) {
+                    listing.scrapedData = {};
+                  }
+
+                  listing.scrapedData = {
+                    source: 'BizBuySell',
+                    detailUrl: detailUrl,
+                    priceText: extractedFinancials.askingPrice || 'Not found',
+                    revenueText: extractedFinancials.grossRevenue || 'Not found',
+                    cashFlowText: extractedFinancials.cashFlow || 'Not found'
+                  };
                   listing.businessId = detailUrl || listing.businessId;
                   listing.sbaPreApproved = true;
-                  console.log(`Extracted SBA listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                  if (!listing.sourceContent) {
+                    listing.sourceContent = {
+                      content: detailContent,
+                      scrapedAt: new Date(),
+                      financials: [],
+                      detailedInfo: []
+                    };
+                  }
+
+                  console.log(`Extracted BizBuySell SBA listing:`);
+                  console.log(`   Business ID: ${listing.businessId}`);
+                  console.log(`   Name: ${listing.name}`);
+                  console.log(`   Price: $${listing.price.toLocaleString()}`);
+                  console.log(`   Revenue: $${listing.revenue.toLocaleString()}`);
+                  console.log(`   Cash Flow: $${listing.cashFlow.toLocaleString()}`);
+                  console.log(`   Raw price text: ${listing.scrapedData?.priceText || 'N/A'}`);
+                  console.log(`   Raw revenue text: ${listing.scrapedData?.revenueText || 'N/A'}`);
+                  console.log(`   Location: ${listing.location.city}, ${listing.location.state}`);
+                  console.log(`   Sector: ${listing.sector}`);
+                  console.log(`   SBA Pre-approved: ${listing.sbaPreApproved}`);
+                  console.log(`   Financials count: ${listing.sourceContent?.financials?.length || 0}`);
+                  console.log('---');
                   allListings.push(listing);
+                  await sleep(2000);
                 } catch (err) {
                   console.error(`BizBuySell SBA parse error on page ${pageNum}:`, err.message);
                 }
@@ -628,13 +1031,48 @@ const scrapeBusinesses = async () => {
               });
               console.log(`Found ${snippets.length} Sunbelt Network listings on page ${pageNum}`);
 
-              for (const { html, detailUrl } of snippets) {
+              const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
+              const existsResults = await batchCheckBusinessExists(allDetailUrls);
+
+              let processedCount = 0;
+              let skippedCount = 0;
+
+              for (let i = 0; i < snippets.length; i++) {
+                const { html, detailUrl } = snippets[i];
+                const businessExists = existsResults[i];
+                
+                if (businessExists) {
+                  console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+                  skippedCount++;
+                  continue;
+                }
+
                 try {
+                  let detailContent = '';
+                  try {
+                    console.log(`Fetching Sunbelt Network detail page: ${detailUrl}`);
+                    processedCount++;
+                    const detailResponse = await axios.get(detailUrl, {
+                      httpsAgent,
+                      timeout: 30000,
+                      headers: { 'User-Agent': userAgent }
+                    });
+                    detailContent = detailResponse.data;
+                    console.log(`Sunbelt Network detail page fetched successfully for ${detailUrl}`);
+                  } catch (detailErr) {
+                    console.error(`Failed to fetch Sunbelt Network detail page ${detailUrl}:`, detailErr.message);
+                    detailContent = html;
+                  }
+
+                  if (detailContent.length > 50000) {
+                    detailContent = detailContent.substring(0, 50000) + '...';
+                  }
+
                   const aiResp = await openai.chat.completions.create({
                     model: 'gpt-4o-mini',
                     messages: [
                       { role: 'system', content: systemPrompt },
-                      { role: 'user', content: html }
+                      { role: 'user', content: detailContent }
                     ],
                     response_format: { type: 'json_object' }
                   });
@@ -642,8 +1080,20 @@ const scrapeBusinesses = async () => {
                   listing.scrapedData.source = 'Sunbelt Network';
                   listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
                   listing.businessId = detailUrl || listing.businessId;
-                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}`);
+
+                  if (!listing.sourceContent) {
+                    listing.sourceContent = {
+                      content: detailContent,
+                      scrapedAt: new Date(),
+                      financials: [],
+                      detailedInfo: []
+                    };
+                  }
+
+                  console.log(`Extracted Sunbelt Network listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
                   allListings.push(listing);
+
+                  await sleep(3000);
                 } catch (err) {
                   console.error(`Sunbelt Network parse error on page ${pageNum}:`, err.message);
                 }
@@ -665,12 +1115,15 @@ const scrapeBusinesses = async () => {
         console.log(`Starting scrape for ${site.name}`);
         await site.scrape();
         console.log(`Completed scrape for ${site.name}`);
+        console.log(`📊 ${site.name} Summary: ${processedCount || 0} new, ${skippedCount || 0} skipped`);
+        await sleep(30000);
       } catch (err) {
         console.error(`Failed to scrape ${site.name}: ${err.message}. Moving to next site...`);
         if (browser) {
           await browser.close();
           browser = null;
         }
+        await sleep(10000);
       }
     }
 

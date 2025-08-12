@@ -60,6 +60,24 @@ const userSchema = new Schema({
     bizgptQueries: { type: Number, default: 0 },
     lastResetDate: { type: Date, default: Date.now }
   },
+  workspace: {
+    savedForAnalysis: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Business' }],
+    privateFinancials: [{
+      businessId: String,
+      data: {
+        purchasePrice: Number,
+        downPaymentPercent: Number,
+        loanTerm: Number,
+        interestRate: Number,
+        monthlyOperatingExpenses: Number,
+        annualRevenue: Number,
+        discretionaryEarnings: Number,
+        addBacks: Number
+      },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date, default: Date.now }
+    }]
+  },
   billingInfo: {
     cardNumber: { type: String, default: '' },
     expiry: { type: String, default: '' },

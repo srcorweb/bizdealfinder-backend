@@ -519,6 +519,10 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
     let detectedSector = null;
     let primaryBusinessType = null;
 
+    console.log('=== AI SEARCH DEBUG START ===');
+    console.log('Original query:', originalQuery);
+    console.log('Boolean filters detected:', booleanFilters);
+    console.log('Price filters detected:', priceFilter);
     console.log('=== BUSINESS TYPE DETECTION DEBUG ===');
     console.log('Original query:', originalQuery);
     console.log('Processed query:', query);
@@ -699,6 +703,79 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
       console.log('Location filter applied:', JSON.stringify(matchFilters, null, 2));
     }
 
+    if (booleanFilters.some(filter => filter.sbaPreApproved === true)) {
+    console.log('Detected SBA query - using optimized pipeline');
+    
+    try {
+      const sbaQuery = { sbaPreApproved: true };
+      
+      // Add other filters if present
+      for (const filter of booleanFilters) {
+        Object.assign(sbaQuery, filter);
+      }
+      
+      if (Object.keys(priceFilter).length > 0) {
+        Object.assign(sbaQuery, priceFilter);
+      }
+      
+      if (location) {
+        const escapeRegex = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        if (detectedCity && detectedState) {
+          sbaQuery.$and = [
+            { 'location.city': { $regex: new RegExp('^' + escapeRegex(detectedCity) + '$', 'i') } },
+            { 'location.state': { $regex: new RegExp('^' + escapeRegex(detectedState) + '$', 'i') } }
+          ];
+        } else if (detectedCity) {
+          sbaQuery['location.city'] = { 
+            $regex: `^${escapeRegex(detectedCity)}$`,
+            $options: 'i'
+          };
+        } else if (detectedState) {
+          sbaQuery['location.state'] = { 
+            $regex: `^${escapeRegex(detectedState)}$`,
+            $options: 'i'
+          };
+        }
+      }
+      
+      const sbaBusinesses = await Business.find(sbaQuery)
+        .select({
+          businessId: 1,
+          name: 1,
+          sector: 1,
+          price: 1,
+          revenue: 1,
+          cashFlow: 1,
+          location: 1,
+          description: 1,
+          aiGeneratedDescription: 1,
+          'scrapedData.detailUrl': 1,
+          'scrapedData.source': 1,
+          'scrapedData.priceText': 1,
+          'scrapedData.revenueText': 1,
+          'sourceContent.financials': 1,
+          'sourceContent.detailedInfo': 1,
+          distressed: 1,
+          ownerAbsentee: 1,
+          sbaPreApproved: 1,
+          sellerFinancing: 1,
+          zeroDown: 1,
+          brickAndMortar: 1,
+          'riskAnalysis.score': 1
+        })
+        .limit(500)
+        .lean();
+      
+      console.log('SBA optimized query found:', sbaBusinesses.length, 'businesses');
+      await incrementUsage(req.user.id, 'searches');
+      return res.status(200).json(sbaBusinesses);
+    } catch (sbaError) {
+      console.error('SBA optimized query failed:', sbaError);
+      // Continue with regular pipeline as fallback
+    }
+  }
+
     const pipeline = [];
     let hasSearchScore = false;
 
@@ -826,7 +903,39 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
 
     // const limit = ['location', 'boolean', 'price'].includes(queryType) ? 200 : 50;
     // pipeline.push({ $limit: limit });
-    pipeline.push({ $limit: 2000 });
+    const limit = booleanFilters.some(filter => filter.sbaPreApproved === true) ? 500 : 2000;
+    pipeline.push({ $limit: limit });
+
+    // pipeline.push({
+    //   $project: {
+    //     businessId: 1,
+    //     name: 1,
+    //     sector: 1,
+    //     price: 1,
+    //     revenue: 1,
+    //     cashFlow: 1,
+    //     location: 1,
+    //     description: { $substr: ['$description', 0, 1000] },
+    //     scrapedData: {
+    //       detailUrl: 1,
+    //       source: 1, // Ensure source is included
+    //       priceText: 1,
+    //       revenueText: 1
+    //     },
+    //     sourceContent: {
+    //       financials: 1,
+    //       detailedInfo: 1,
+    //       content: { $substr: ['$sourceContent.content', 0, 1000] }
+    //     },
+    //     distressed: 1,
+    //     ownerAbsentee: 1,
+    //     sbaPreApproved: 1,
+    //     sellerFinancing: 1,
+    //     zeroDown: 1,
+    //     brickAndMortar: 1,
+    //     ...(hasSearchScore ? { score: 1 } : {})
+    //   }
+    // });
 
     pipeline.push({
       $project: {
@@ -837,24 +946,48 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
         revenue: 1,
         cashFlow: 1,
         location: 1,
-        description: { $substr: ['$description', 0, 1000] },
+        description: { 
+          $cond: {
+            if: { $and: [{ $ne: ['$description', null] }, { $ne: ['$description', ''] }] },
+            then: { $substr: ['$description', 0, 1000] },
+            else: { $ifNull: ['$aiGeneratedDescription', 'No description available'] }
+          }
+        },
         scrapedData: {
-          detailUrl: 1,
-          source: 1, // Ensure source is included
-          priceText: 1,
-          revenueText: 1
+          detailUrl: { $ifNull: ['$scrapedData.detailUrl', ''] },
+          source: { $ifNull: ['$scrapedData.source', ''] },
+          priceText: { $ifNull: ['$scrapedData.priceText', ''] },
+          revenueText: { $ifNull: ['$scrapedData.revenueText', ''] }
         },
         sourceContent: {
-          financials: 1,
-          detailedInfo: 1,
-          content: { $substr: ['$sourceContent.content', 0, 1000] }
+          $cond: {
+            if: { $ne: ['$sourceContent', null] },
+            then: {
+              financials: { $ifNull: ['$sourceContent.financials', []] },
+              detailedInfo: { $ifNull: ['$sourceContent.detailedInfo', []] },
+              content: { 
+                $cond: {
+                  if: { $and: [{ $ne: ['$sourceContent.content', null] }, { $gt: [{ $strLenCP: { $ifNull: ['$sourceContent.content', ''] } }, 0] }] },
+                  then: { $substr: ['$sourceContent.content', 0, 1000] },
+                  else: ''
+                }
+              }
+            },
+            else: {
+              financials: [],
+              detailedInfo: [],
+              content: ''
+            }
+          }
         },
-        distressed: 1,
-        ownerAbsentee: 1,
-        sbaPreApproved: 1,
-        sellerFinancing: 1,
-        zeroDown: 1,
-        brickAndMortar: 1,
+        distressed: { $ifNull: ['$distressed', false] },
+        ownerAbsentee: { $ifNull: ['$ownerAbsentee', false] },
+        sbaPreApproved: { $ifNull: ['$sbaPreApproved', false] },
+        sellerFinancing: { $ifNull: ['$sellerFinancing', false] },
+        zeroDown: { $ifNull: ['$zeroDown', false] },
+        brickAndMortar: { $ifNull: ['$brickAndMortar', true] },
+        aiGeneratedDescription: { $ifNull: ['$aiGeneratedDescription', ''] },
+        riskScore: { $ifNull: ['$riskAnalysis.score', null] },
         ...(hasSearchScore ? { score: 1 } : {})
       }
     });
@@ -863,7 +996,77 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
     console.log('=== EXECUTING MONGODB QUERY ===');
     console.log('Full pipeline:', JSON.stringify(pipeline, null, 2));
 
-    const businesses = await Business.aggregate(pipeline).exec();
+    let businesses;
+    try {
+      // Add allowDiskUse for large documents
+      businesses = await Business.aggregate(pipeline).allowDiskUse(true).exec();
+      console.log('MongoDB query executed successfully, results:', businesses.length);
+    } catch (mongoError) {
+      console.error('MongoDB aggregation error:', mongoError);
+      console.error('Error details:', {
+        message: mongoError.message,
+        code: mongoError.code,
+        codeName: mongoError.codeName
+      });
+      
+      // If aggregation fails, try a simpler query for SBA data
+      if (booleanFilters.some(filter => filter.sbaPreApproved === true)) {
+        console.log('Falling back to simple SBA query due to aggregation error...');
+        try {
+          const fallbackQuery = { sbaPreApproved: true };
+          
+          // Add other filters
+          for (const filter of booleanFilters) {
+            Object.assign(fallbackQuery, filter);
+          }
+          if (Object.keys(priceFilter).length > 0) {
+            Object.assign(fallbackQuery, priceFilter);
+          }
+          
+          businesses = await Business.find(fallbackQuery)
+            .select({
+              businessId: 1,
+              name: 1,
+              sector: 1,
+              price: 1,
+              revenue: 1,
+              cashFlow: 1,
+              location: 1,
+              description: 1,
+              aiGeneratedDescription: 1,
+              'scrapedData.detailUrl': 1,
+              'scrapedData.source': 1,
+              'scrapedData.priceText': 1,
+              'scrapedData.revenueText': 1,
+              'sourceContent.financials': 1,
+              'sourceContent.detailedInfo': 1,
+              distressed: 1,
+              ownerAbsentee: 1,
+              sbaPreApproved: 1,
+              sellerFinancing: 1,
+              zeroDown: 1,
+              brickAndMortar: 1,
+              'riskAnalysis.score': 1
+            })
+            .limit(500)
+            .lean();
+          
+          console.log('Fallback SBA query successful:', businesses.length);
+          hasSearchScore = false;
+        } catch (fallbackError) {
+          console.error('Fallback SBA query also failed:', fallbackError);
+          return res.status(500).json({ 
+            error: 'Database query failed', 
+            details: fallbackError.message
+          });
+        }
+      } else {
+        return res.status(500).json({ 
+          error: 'Database query failed', 
+          details: mongoError.message
+        });
+      }
+    }
 
     console.log('=== SEARCH RESULTS DEBUG ===');
     console.log('Raw results count:', businesses.length);
@@ -2335,6 +2538,125 @@ router.get('/admin/appsumo-stats', authMiddleware, async (req, res) => {
     res.status(200).json(stats);
   } catch (error) {
     console.error('Admin stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/workspace/add', authMiddleware, async (req, res) => {
+  try {
+    const { businessId } = req.body;
+    const userId = req.user?.id;
+    
+    if (!businessId || !userId) {
+      return res.status(400).json({ message: 'Business ID and user required' });
+    }
+
+    const business = await Business.findOne({ businessId });
+    if (!business) {
+      return res.status(404).json({ message: 'Business not found' });
+    }
+
+    const User = require('../../models/users');
+    const user = await User.findById(userId);
+    
+    if (!user.workspace.savedForAnalysis.includes(business._id)) {
+      user.workspace.savedForAnalysis.push(business._id);
+      await user.save();
+    }
+
+    res.status(200).json({ message: 'Added to workspace' });
+  } catch (error) {
+    console.error('Add to workspace error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/workspace/remove/:businessId', authMiddleware, async (req, res) => {
+  try {
+    const { businessId } = req.params;
+    const userId = req.user?.id;
+    
+    const business = await Business.findOne({ businessId });
+    if (!business) {
+      return res.status(404).json({ message: 'Business not found' });
+    }
+
+    const User = require('../../models/users');
+    await User.findByIdAndUpdate(userId, {
+      $pull: { 'workspace.savedForAnalysis': business._id }
+    });
+
+    res.status(200).json({ message: 'Removed from workspace' });
+  } catch (error) {
+    console.error('Remove from workspace error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/workspace', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const User = require('../../models/users');
+    
+    const user = await User.findById(userId).populate('workspace.savedForAnalysis');
+    const businesses = user.workspace?.savedForAnalysis || [];
+    
+    res.status(200).json(businesses);
+  } catch (error) {
+    console.error('Get workspace error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/private-financials', authMiddleware, async (req, res) => {
+  try {
+    const { businessId, financials } = req.body;
+    const userId = req.user?.id;
+    
+    if (!businessId || !financials) {
+      return res.status(400).json({ message: 'Business ID and financials required' });
+    }
+
+    const User = require('../../models/users');
+    const user = await User.findById(userId);
+    
+    const existingIndex = user.workspace.privateFinancials.findIndex(
+      pf => pf.businessId === businessId
+    );
+    
+    if (existingIndex >= 0) {
+      user.workspace.privateFinancials[existingIndex].data = financials;
+      user.workspace.privateFinancials[existingIndex].updatedAt = new Date();
+    } else {
+      user.workspace.privateFinancials.push({
+        businessId,
+        data: financials
+      });
+    }
+    
+    await user.save();
+    res.status(200).json({ message: 'Private financials saved' });
+  } catch (error) {
+    console.error('Save private financials error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/private-financials/:businessId', authMiddleware, async (req, res) => {
+  try {
+    const { businessId } = req.params;
+    const userId = req.user?.id;
+    
+    const User = require('../../models/users');
+    const user = await User.findById(userId);
+    
+    const privateFinancials = user.workspace?.privateFinancials?.find(
+      pf => pf.businessId === businessId
+    );
+    
+    res.status(200).json(privateFinancials?.data || null);
+  } catch (error) {
+    console.error('Get private financials error:', error);
     res.status(500).json({ error: error.message });
   }
 });
