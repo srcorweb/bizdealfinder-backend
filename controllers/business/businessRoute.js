@@ -949,7 +949,7 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
         description: { 
           $cond: {
             if: { $and: [{ $ne: ['$description', null] }, { $ne: ['$description', ''] }] },
-            then: { $substr: ['$description', 0, 1000] },
+            then: { $substrCP: ['$description', 0, 1000] },
             else: { $ifNull: ['$aiGeneratedDescription', 'No description available'] }
           }
         },
@@ -968,7 +968,7 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
               content: { 
                 $cond: {
                   if: { $and: [{ $ne: ['$sourceContent.content', null] }, { $gt: [{ $strLenCP: { $ifNull: ['$sourceContent.content', ''] } }, 0] }] },
-                  then: { $substr: ['$sourceContent.content', 0, 1000] },
+                  then: { $substrCP: ['$sourceContent.content', 0, 1000] },
                   else: ''
                 }
               }
