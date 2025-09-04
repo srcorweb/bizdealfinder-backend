@@ -44,7 +44,7 @@ router.post('/sign-up', signup, async (req, res) => {
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'Verify Your Email - BusinessesForSale.com',
+      subject: 'Verify Your Email - bizdealfinder.com',
       html: `<p>Please verify your email by clicking <a href="${verificationLink}">here</a>.</p>`
     };
     const emailResult = await transporter.sendMail(mailOptions);
