@@ -24,7 +24,9 @@ const relevanceCache = new NodeCache({ stdTTL: 3600 }); // Cache relevance score
 
 // Nodemailer setup
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  service: 'smtp.zoho.com',
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
