@@ -1601,6 +1601,11 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
 
       return res.status(200).json({
         businessName: business.name,
+        name: business.name,
+        sector: business.sector,
+        location: business.location,
+        revenue: business.revenue,
+        cashFlow: business.cashFlow,
         aiGeneratedDescription,
         swotAnalysis: business.swotAnalysis,
         benchmarks: business.benchmarks,
@@ -1611,6 +1616,7 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
         marketTrendsData: business.marketTrendsData,
         valuation: business.valuation,
         detailUrl: business.scrapedData?.detailUrl || '',
+        scrapedData: business.scrapedData,
         sourceData: {
           financials: correctedFinancials,
           detailedInfo: business.sourceContent?.detailedInfo || []
@@ -2064,15 +2070,23 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
 
     res.status(200).json({
       businessName: business.name,
+      name: business.name,
+      sector: business.sector,
+      location: business.location,
+      revenue: business.revenue,
+      cashFlow: business.cashFlow,
       aiGeneratedDescription,
       swotAnalysis: analysis.swotAnalysis,
       benchmarks: analysis.benchmarks,
       riskAnalysis: analysis.riskAnalysis,
       competitors: competitors.map(c => ({
         name: c.name,
+        sector: c.sector,
+        location: c.location,
         price: c.price,
         revenue: c.revenue,
         cashFlow: c.cashFlow,
+        scrapedData: c.scrapedData,
         yearsEstablished: c.sourceContent?.detailedInfo?.find(d => d.key === 'Years Established')?.value || 'N/A',
         detailUrl: c.scrapedData?.detailUrl || ''
       })),
@@ -2081,6 +2095,7 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
       marketTrendsData: analysis.marketTrendsData,
       valuation: analysis.valuation,
       detailUrl: business.scrapedData?.detailUrl || '',
+      scrapedData: business.scrapedData,
       sourceData: {
         financials: financials.length > 0 ? financials : [
           { key: 'Asking Price', value: `$${business.price.toLocaleString()}` },
