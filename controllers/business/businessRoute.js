@@ -583,21 +583,41 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
     // Check for multi-word cities like "Los Angeles"
     const multiWordCities = ['los angeles', 'san francisco', 'new york', 'las vegas', 'san diego', 'san jose', 'new orleans'];
 
-    for (const city of multiWordCities) {
-      if (query.includes(city)) {
-        detectedCity = city;
-        location = city;
+    // Check for multi-word states FIRST (higher priority)
+    const multiWordStates = ['north dakota', 'south dakota', 'north carolina', 'south carolina', 'west virginia', 'new hampshire', 'new jersey', 'new mexico', 'new york', 'rhode island'];
+
+    for (const state of multiWordStates) {
+      if (query.includes(state)) {
+        detectedState = state;
+        location = state;
         
-        // Remove city words from search terms
-        const cityWords = city.split(' ');
-        searchTerms = searchTerms.filter(term => !cityWords.includes(term));
+        // Remove state words from search terms
+        const stateWords = state.split(' ');
+        searchTerms = searchTerms.filter(term => !stateWords.includes(term));
         cityStateFound = true;
-        console.log('Multi-word city detected:', city);
+        console.log('Multi-word state detected:', state);
         break;
       }
     }
 
-    // If no multi-word city found, try single word combinations
+    // Then check for multi-word cities
+    if (!cityStateFound) {
+      for (const city of multiWordCities) {
+        if (query.includes(city)) {
+          detectedCity = city;
+          location = city;
+          
+          // Remove city words from search terms
+          const cityWords = city.split(' ');
+          searchTerms = searchTerms.filter(term => !cityWords.includes(term));
+          cityStateFound = true;
+          console.log('Multi-word city detected:', city);
+          break;
+        }
+      }
+    }
+
+    // If no multi-word location found, try single word combinations
     if (!cityStateFound) {
       for (let i = 0; i < queryWords.length - 1; i++) {
         const potentialCity = queryWords[i];
