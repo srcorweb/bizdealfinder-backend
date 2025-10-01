@@ -1596,6 +1596,12 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
         ];
       }
 
+      const fullCompetitors = await Business.find({
+        sector: business.sector,
+        price: { $gte: business.price * 0.5, $lte: business.price * 1.5 },
+        businessId: { $ne: businessId }
+      }).select('businessId name sector location price revenue cashFlow scrapedData').limit(3).lean();
+
       // Increment usage counter
       await incrementUsage(req.user.id, 'aiAnalyses');
 
@@ -1610,7 +1616,7 @@ router.post('/swot-analysis', authMiddleware, checkUsageLimit('aiAnalyses'), asy
         swotAnalysis: business.swotAnalysis,
         benchmarks: business.benchmarks,
         riskAnalysis: business.riskAnalysis,
-        competitors: business.competitors,
+        competitors: fullCompetitors.length > 0 ? fullCompetitors : business.competitors,
         insights: business.insights,
         marketTrends: business.marketTrends,
         marketTrendsData: business.marketTrendsData,
