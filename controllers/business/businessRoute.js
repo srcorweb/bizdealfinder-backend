@@ -2338,7 +2338,8 @@ router.post('/contact', authMiddleware, async (req, res) => {
     }
 
     const mailOptions = {
-      from: email,
+      from: process.env.EMAIL_USER,
+      replyTo: email,
       to: process.env.CONTACT_EMAIL,
       subject: `Contact Form Submission from ${name}`,
       text: `Name: ${name}\nEmail: ${email}\nMessage: ${message}`
