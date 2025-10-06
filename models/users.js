@@ -58,6 +58,7 @@ const userSchema = new Schema({
     searches: { type: Number, default: 0 },
     aiAnalyses: { type: Number, default: 0 },
     bizgptQueries: { type: Number, default: 0 },
+    workspaceComparisons: { type: Number, default: 0 },
     lastResetDate: { type: Date, default: Date.now }
   },
   workspace: {

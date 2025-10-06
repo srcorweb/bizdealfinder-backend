@@ -158,12 +158,12 @@ const checkUsageLimit = (type) => {
       let limits = null;
       
       if (user.plan.name === 'Free') {
-        limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
+        limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
       } else if (user.plan.isAppSumo) {
         if (user.plan.appSumoTier === 1) {
-          limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3 };
+          limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
         } else if (user.plan.appSumoTier === 2) {
-          limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10 };
+          limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
         }
       }
       
@@ -2375,12 +2375,12 @@ router.get('/usage', authMiddleware, async (req, res) => {
     let limits = null;
     
     if (user.plan.name === 'Free') {
-      limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3 };
+      limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
     } else if (user.plan.isAppSumo) {
       if (user.plan.appSumoTier === 1) {
-        limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3 };
+        limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
       } else if (user.plan.appSumoTier === 2) {
-        limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10 };
+        limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
       }
     }
     
@@ -2391,6 +2391,56 @@ router.get('/usage', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Usage fetch error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check workspace comparison usage and increment
+router.post('/workspace/check-comparison-limit', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const User = require('../../models/users');
+    const user = await User.findById(userId);
+    
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Reset usage if it's a new month
+    const now = new Date();
+    const lastReset = new Date(user.usage.lastResetDate);
+    if (now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
+      user.usage.workspaceComparisons = 0;
+      user.usage.lastResetDate = now;
+      await user.save();
+    }
+
+    // Check limit for free users
+    if (user.plan.name === 'Free' && user.usage.workspaceComparisons >= 3) {
+      return res.status(429).json({ 
+        message: 'Comparison limit reached. Free users get 3 workspace comparisons per month.',
+        limitReached: true
+      });
+    }
+
+    res.status(200).json({ allowed: true });
+  } catch (error) {
+    console.error('Check comparison limit error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Increment workspace comparison usage
+router.post('/workspace/increment-comparison', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    const User = require('../../models/users');
+    
+    await User.findByIdAndUpdate(userId, { 
+      $inc: { 'usage.workspaceComparisons': 1 } 
+    });
+
+    res.status(200).json({ message: 'Usage incremented' });
+  } catch (error) {
+    console.error('Increment comparison error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2603,10 +2653,21 @@ router.post('/workspace/add', authMiddleware, async (req, res) => {
     const User = require('../../models/users');
     const user = await User.findById(userId);
     
-    if (!user.workspace.savedForAnalysis.includes(business._id)) {
-      user.workspace.savedForAnalysis.push(business._id);
-      await user.save();
+    // Check if already in workspace
+    if (user.workspace.savedForAnalysis.includes(business._id)) {
+      return res.status(200).json({ message: 'Already in workspace' });
     }
+
+    // Check workspace limit for free users
+    if (user.plan.name === 'Free' && user.workspace.savedForAnalysis.length >= 2) {
+      return res.status(429).json({ 
+        message: 'Workspace limit reached. Free users can save up to 2 businesses for analysis.',
+        limitReached: true
+      });
+    }
+
+    user.workspace.savedForAnalysis.push(business._id);
+    await user.save();
 
     res.status(200).json({ message: 'Added to workspace' });
   } catch (error) {
