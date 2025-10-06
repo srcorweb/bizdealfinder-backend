@@ -156,14 +156,14 @@ const checkUsageLimit = (type) => {
       }
 
       let limits = null;
-      
+
       if (user.plan.name === 'Free') {
-        limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
+        limits = { searches: 'Unlimited', aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
       } else if (user.plan.isAppSumo) {
         if (user.plan.appSumoTier === 1) {
-          limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
+          limits = { searches: 'Unlimited', aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
         } else if (user.plan.appSumoTier === 2) {
-          limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
+          limits = { searches: 'Unlimited', aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
         }
       }
       
@@ -307,7 +307,7 @@ router.get('/search', authMiddleware, async (req, res) => {
 });
 
 // AI-powered relevance search
-router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req, res) => {
+router.get('/ai-search', authMiddleware, async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) {
@@ -790,8 +790,7 @@ router.get('/ai-search', authMiddleware, checkUsageLimit('searches'), async (req
         .lean();
       
       console.log('SBA optimized query found:', sbaBusinesses.length, 'businesses');
-      await incrementUsage(req.user.id, 'searches');
-      return res.status(200).json(sbaBusinesses);
+      res.status(200).json(filteredBusinesses);
     } catch (sbaError) {
       console.error('SBA optimized query failed:', sbaError);
       // Continue with regular pipeline as fallback
@@ -2373,14 +2372,14 @@ router.get('/usage', authMiddleware, async (req, res) => {
     }
 
     let limits = null;
-    
+
     if (user.plan.name === 'Free') {
-      limits = { searches: 3, aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
+      limits = { searches: 'Unlimited', aiAnalyses: 3, bizgptQueries: 3, workspaceComparisons: 3 };
     } else if (user.plan.isAppSumo) {
       if (user.plan.appSumoTier === 1) {
-        limits = { searches: 10, aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
+        limits = { searches: 'Unlimited', aiAnalyses: 5, bizgptQueries: 3, workspaceComparisons: 'Unlimited' };
       } else if (user.plan.appSumoTier === 2) {
-        limits = { searches: 30, aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
+        limits = { searches: 'Unlimited', aiAnalyses: 10, bizgptQueries: 10, workspaceComparisons: 'Unlimited' };
       }
     }
     
