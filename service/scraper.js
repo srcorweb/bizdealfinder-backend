@@ -513,110 +513,110 @@ const scrapeBusinesses = async () => {
           }
         }
       },
-      {
-        name: 'BizBuySell',
-        scrape: async () => {
-          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/`;
-            console.log(`Fetching BizBuySell page ${pageNum}: ${url}`);
-            try {
-              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
-              const safariAgents = [
-                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
-              ];
-              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
-              const start = Date.now();
-              const response = await axios.get(url, {
-                httpsAgent,
-                timeout: 30000,
-                headers: { 'User-Agent': userAgent }
-              });
-              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
-              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
+      // {
+      //   name: 'BizBuySell',
+      //   scrape: async () => {
+      //     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      //       const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/`;
+      //       console.log(`Fetching BizBuySell page ${pageNum}: ${url}`);
+      //       try {
+      //         const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+      //         const safariAgents = [
+      //           'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+      //         ];
+      //         const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+      //         const start = Date.now();
+      //         const response = await axios.get(url, {
+      //           httpsAgent,
+      //           timeout: 30000,
+      //           headers: { 'User-Agent': userAgent }
+      //         });
+      //         const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+      //         console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
 
-              const $ = cheerio.load(response.data);
-              const snippets = [];
-              $('app-listing-diamond').each((_, el) => {
-                const detailUrl = $(el).find('a').attr('href') || '';
-                const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
-                snippets.push({ html: $.html(el), detailUrl: fullUrl });
-              });
-              console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
+      //         const $ = cheerio.load(response.data);
+      //         const snippets = [];
+      //         $('app-listing-diamond').each((_, el) => {
+      //           const detailUrl = $(el).find('a').attr('href') || '';
+      //           const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+      //           snippets.push({ html: $.html(el), detailUrl: fullUrl });
+      //         });
+      //         console.log(`Found ${snippets.length} BizBuySell listings on page ${pageNum}`);
 
-              const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
-              const existsResults = await batchCheckBusinessExists(allDetailUrls);
+      //         const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
+      //         const existsResults = await batchCheckBusinessExists(allDetailUrls);
 
-              let processedCount = 0;
-              let skippedCount = 0;
+      //         let processedCount = 0;
+      //         let skippedCount = 0;
 
-              for (let i = 0; i < snippets.length; i++) {
-                const { html, detailUrl } = snippets[i];
-                const businessExists = existsResults[i];
+      //         for (let i = 0; i < snippets.length; i++) {
+      //           const { html, detailUrl } = snippets[i];
+      //           const businessExists = existsResults[i];
                 
-                if (businessExists) {
-                  console.log(`⏭️  Skipping existing business: ${detailUrl}`);
-                  skippedCount++;
-                  continue;
-                }
+      //           if (businessExists) {
+      //             console.log(`⏭️  Skipping existing business: ${detailUrl}`);
+      //             skippedCount++;
+      //             continue;
+      //           }
 
-                try {
-                  let detailContent = '';
-                  try {
-                    console.log(`Fetching detail page: ${detailUrl}`);
-                    processedCount++;
-                    const detailResponse = await axios.get(detailUrl, {
-                      httpsAgent,
-                      timeout: 30000,
-                      headers: { 'User-Agent': userAgent }
-                    });
-                    detailContent = detailResponse.data;
-                    console.log(`Detail page fetched successfully for ${detailUrl}`);
-                  } catch (detailErr) {
-                    console.error(`Failed to fetch detail page ${detailUrl}:`, detailErr.message);
-                    detailContent = html;
-                  }
+      //           try {
+      //             let detailContent = '';
+      //             try {
+      //               console.log(`Fetching detail page: ${detailUrl}`);
+      //               processedCount++;
+      //               const detailResponse = await axios.get(detailUrl, {
+      //                 httpsAgent,
+      //                 timeout: 30000,
+      //                 headers: { 'User-Agent': userAgent }
+      //               });
+      //               detailContent = detailResponse.data;
+      //               console.log(`Detail page fetched successfully for ${detailUrl}`);
+      //             } catch (detailErr) {
+      //               console.error(`Failed to fetch detail page ${detailUrl}:`, detailErr.message);
+      //               detailContent = html;
+      //             }
 
-                  if (detailContent.length > 50000) {
-                    detailContent = detailContent.substring(0, 50000) + '...';
-                  }
+      //             if (detailContent.length > 50000) {
+      //               detailContent = detailContent.substring(0, 50000) + '...';
+      //             }
 
-                  const aiResp = await openai.chat.completions.create({
-                    model: 'gpt-4o-mini',
-                    messages: [
-                      { role: 'system', content: systemPrompt },
-                      { role: 'user', content: detailContent }
-                    ],
-                    response_format: { type: 'json_object' }
-                  });
-                  const listing = JSON.parse(aiResp.choices[0].message.content);
-                  listing.scrapedData.source = 'BizBuySell';
-                  listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
-                  listing.businessId = detailUrl || listing.businessId;
+      //             const aiResp = await openai.chat.completions.create({
+      //               model: 'gpt-4o-mini',
+      //               messages: [
+      //                 { role: 'system', content: systemPrompt },
+      //                 { role: 'user', content: detailContent }
+      //               ],
+      //               response_format: { type: 'json_object' }
+      //             });
+      //             const listing = JSON.parse(aiResp.choices[0].message.content);
+      //             listing.scrapedData.source = 'BizBuySell';
+      //             listing.scrapedData.detailUrl = detailUrl || listing.scrapedData.detailUrl;
+      //             listing.businessId = detailUrl || listing.businessId;
 
-                  if (!listing.sourceContent) {
-                    listing.sourceContent = {
-                      content: detailContent,
-                      scrapedAt: new Date(),
-                      financials: [],
-                      detailedInfo: []
-                    };
-                  }
-                  console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
-                  allListings.push(listing);
-                  await sleep(2000);
-                } catch (err) {
-                  console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
-                }
-              }
-            } catch (err) {
-              console.error(`Error fetching BizBuySell page ${pageNum}:`, err.message);
-              console.log(`Skipping to next site due to BizBuySell page ${pageNum} failure`);
-              throw new Error(`Failed to scrape BizBuySell page ${pageNum}`);
-            }
-            await sleep(5000);
-          }
-        }
-      },
+      //             if (!listing.sourceContent) {
+      //               listing.sourceContent = {
+      //                 content: detailContent,
+      //                 scrapedAt: new Date(),
+      //                 financials: [],
+      //                 detailedInfo: []
+      //               };
+      //             }
+      //             console.log(`Extracted listing: ${listing.businessId}, sector: ${listing.sector}, cashFlow: ${listing.cashFlow}, financials: ${listing.sourceContent?.financials?.length || 0}`);
+      //             allListings.push(listing);
+      //             await sleep(2000);
+      //           } catch (err) {
+      //             console.error(`BizBuySell parse error on page ${pageNum}:`, err.message);
+      //           }
+      //         }
+      //       } catch (err) {
+      //         console.error(`Error fetching BizBuySell page ${pageNum}:`, err.message);
+      //         console.log(`Skipping to next site due to BizBuySell page ${pageNum} failure`);
+      //         throw new Error(`Failed to scrape BizBuySell page ${pageNum}`);
+      //       }
+      //       await sleep(5000);
+      //     }
+      //   }
+      // },
       {
         name: 'Flippa',
         scrape: async () => {
@@ -745,262 +745,262 @@ const scrapeBusinesses = async () => {
           }
         }
       },
-      {
-        name: 'BizBuySell-SBA',
-        scrape: async () => {
-          for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-            const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/?q=az1zYmE%3D' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/?q=az1zYmE%3D`;
-            console.log(`Fetching BizBuySell SBA page ${pageNum}: ${url}`);
-            try {
-              const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
-              const safariAgents = [
-                'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
-              ];
-              const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
-              const start = Date.now();
-              const response = await axios.get(url, {
-                httpsAgent,
-                timeout: 30000,
-                headers: { 'User-Agent': userAgent }
-              });
-              const elapsed = ((Date.now() - start) / 1000).toFixed(4);
-              console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
+      // {
+      //   name: 'BizBuySell-SBA',
+      //   scrape: async () => {
+      //     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      //       const url = pageNum === 1 ? 'https://www.bizbuysell.com/businesses-for-sale/?q=az1zYmE%3D' : `https://www.bizbuysell.com/businesses-for-sale/${pageNum}/?q=az1zYmE%3D`;
+      //       console.log(`Fetching BizBuySell SBA page ${pageNum}: ${url}`);
+      //       try {
+      //         const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+      //         const safariAgents = [
+      //           'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0'
+      //         ];
+      //         const userAgent = safariAgents[Math.floor(Math.random() * safariAgents.length)];
+      //         const start = Date.now();
+      //         const response = await axios.get(url, {
+      //           httpsAgent,
+      //           timeout: 30000,
+      //           headers: { 'User-Agent': userAgent }
+      //         });
+      //         const elapsed = ((Date.now() - start) / 1000).toFixed(4);
+      //         console.log(`status=${response.status}, elapsed_time=${elapsed}s, url=${url}`);
 
-              const $ = cheerio.load(response.data);
-              const snippets = [];
+      //         const $ = cheerio.load(response.data);
+      //         const snippets = [];
 
-              console.log('Checking for different listing selectors...');
-              const appListingShowcaseCount = $('app-listing-showcase').length;
-              const appListingCount = $('app-listing-diamond').length;
-              const listingItemCount = $('.listing-item').length;
-              const businessCardCount = $('.business-card').length;
+      //         console.log('Checking for different listing selectors...');
+      //         const appListingShowcaseCount = $('app-listing-showcase').length;
+      //         const appListingCount = $('app-listing-diamond').length;
+      //         const listingItemCount = $('.listing-item').length;
+      //         const businessCardCount = $('.business-card').length;
 
-              console.log(`app-listing-showcase: ${appListingShowcaseCount}`);
-              console.log(`app-listing-diamond: ${appListingCount}`);
-              console.log(`listing-item: ${listingItemCount}`);
-              console.log(`business-card: ${businessCardCount}`);
+      //         console.log(`app-listing-showcase: ${appListingShowcaseCount}`);
+      //         console.log(`app-listing-diamond: ${appListingCount}`);
+      //         console.log(`listing-item: ${listingItemCount}`);
+      //         console.log(`business-card: ${businessCardCount}`);
 
-              const selectors = [
-                { name: 'app-listing-showcase', selector: 'app-listing-showcase' },
-                { name: 'app-listing-diamond', selector: 'app-listing-diamond' },
-                { name: 'listing-showcase', selector: '.listing-showcase' },
-                { name: 'listing-item', selector: '.listing-item' },
-                { name: 'business-card', selector: '.business-card' },
-                { name: 'result-item', selector: '.result-item' }
-              ];
+      //         const selectors = [
+      //           { name: 'app-listing-showcase', selector: 'app-listing-showcase' },
+      //           { name: 'app-listing-diamond', selector: 'app-listing-diamond' },
+      //           { name: 'listing-showcase', selector: '.listing-showcase' },
+      //           { name: 'listing-item', selector: '.listing-item' },
+      //           { name: 'business-card', selector: '.business-card' },
+      //           { name: 'result-item', selector: '.result-item' }
+      //         ];
 
-              let bestSelector = null;
-              let maxCount = 0;
+      //         let bestSelector = null;
+      //         let maxCount = 0;
 
-              for (const { name, selector } of selectors) {
-                const count = $(selector).length;
-                console.log(`${name}: ${count}`);
-                if (count > maxCount) {
-                  maxCount = count;
-                  bestSelector = { name, selector };
-                }
-              }
+      //         for (const { name, selector } of selectors) {
+      //           const count = $(selector).length;
+      //           console.log(`${name}: ${count}`);
+      //           if (count > maxCount) {
+      //             maxCount = count;
+      //             bestSelector = { name, selector };
+      //           }
+      //         }
 
-              console.log(`Best selector found: ${bestSelector?.name} with ${maxCount} elements`);
+      //         console.log(`Best selector found: ${bestSelector?.name} with ${maxCount} elements`);
 
-              const businessLinks = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
-              console.log(`Found ${businessLinks.length} direct business links`);
+      //         const businessLinks = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
+      //         console.log(`Found ${businessLinks.length} direct business links`);
 
-              if (businessLinks.length > 0) {
-                console.log('Using direct business links approach');
-                bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
-                maxCount = businessLinks.length;
-              } else if (maxCount === 0) {
-                console.log('No standard selectors found, searching for elements with business links...');
-                const linkElements = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
-                console.log(`Found ${linkElements.length} business links`);
+      //         if (businessLinks.length > 0) {
+      //           console.log('Using direct business links approach');
+      //           bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
+      //           maxCount = businessLinks.length;
+      //         } else if (maxCount === 0) {
+      //           console.log('No standard selectors found, searching for elements with business links...');
+      //           const linkElements = $('a[href*="/business-opportunity/"], a[href*="/business/"]');
+      //           console.log(`Found ${linkElements.length} business links`);
                 
-                if (linkElements.length > 0) {
-                  bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
-                  maxCount = linkElements.length;
-                }
-              }
+      //           if (linkElements.length > 0) {
+      //             bestSelector = { name: 'business-links', selector: 'a[href*="/business-opportunity/"], a[href*="/business/"]' };
+      //             maxCount = linkElements.length;
+      //           }
+      //         }
 
-              if (bestSelector && maxCount > 0) {
-                console.log(`Using selector: ${bestSelector.name} (${bestSelector.selector})`);
+      //         if (bestSelector && maxCount > 0) {
+      //           console.log(`Using selector: ${bestSelector.name} (${bestSelector.selector})`);
                 
-                $(bestSelector.selector).each((_, el) => {
-                  let detailUrl = '';
+      //           $(bestSelector.selector).each((_, el) => {
+      //             let detailUrl = '';
 
-                  if (bestSelector.name === 'business-links') {
-                    detailUrl = $(el).attr('href') || '';
-                  } else if (bestSelector.name === 'app-listing-showcase') {
-                    detailUrl = $(el).find('a.showcase').attr('href') || $(el).find('a').attr('href') || '';
-                  } else {
-                    detailUrl = $(el).find('a').attr('href') || '';
-                  }
+      //             if (bestSelector.name === 'business-links') {
+      //               detailUrl = $(el).attr('href') || '';
+      //             } else if (bestSelector.name === 'app-listing-showcase') {
+      //               detailUrl = $(el).find('a.showcase').attr('href') || $(el).find('a').attr('href') || '';
+      //             } else {
+      //               detailUrl = $(el).find('a').attr('href') || '';
+      //             }
                   
-                  if (detailUrl && (detailUrl.includes('/business-opportunity/') || detailUrl.includes('/business/'))) {
-                    const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
-                    console.log(`Found valid business link: ${fullUrl}`);
-                    snippets.push({ html: $.html(el), detailUrl: fullUrl });
-                  }
-                });
-              }
+      //             if (detailUrl && (detailUrl.includes('/business-opportunity/') || detailUrl.includes('/business/'))) {
+      //               const fullUrl = detailUrl.startsWith('http') ? detailUrl : `https://www.bizbuysell.com${detailUrl}`;
+      //               console.log(`Found valid business link: ${fullUrl}`);
+      //               snippets.push({ html: $.html(el), detailUrl: fullUrl });
+      //             }
+      //           });
+      //         }
 
-              console.log(`Found ${snippets.length} BizBuySell SBA listings on page ${pageNum}`);
+      //         console.log(`Found ${snippets.length} BizBuySell SBA listings on page ${pageNum}`);
 
-              const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
-              const existsResults = await batchCheckBusinessExists(allDetailUrls);
+      //         const allDetailUrls = snippets.map(snippet => snippet.detailUrl);
+      //         const existsResults = await batchCheckBusinessExists(allDetailUrls);
 
-              let processedCount = 0;
-              let skippedCount = 0;
+      //         let processedCount = 0;
+      //         let skippedCount = 0;
 
-              for (let i = 0; i < snippets.length; i++) {
-                const { html, detailUrl } = snippets[i];
-                const businessExists = existsResults[i];
+      //         for (let i = 0; i < snippets.length; i++) {
+      //           const { html, detailUrl } = snippets[i];
+      //           const businessExists = existsResults[i];
                 
-                if (businessExists) {
-                  console.log(`⏭️  Skipping existing SBA business: ${detailUrl}`);
-                  skippedCount++;
-                  continue;
-                }
+      //           if (businessExists) {
+      //             console.log(`⏭️  Skipping existing SBA business: ${detailUrl}`);
+      //             skippedCount++;
+      //             continue;
+      //           }
 
-                try {
-                  let detailContent = '';
-                  try {
-                    console.log(`Fetching BizBuySell SBA detail page: ${detailUrl}`);
-                    processedCount++;
-                    const detailResponse = await axios.get(detailUrl, {
-                      httpsAgent,
-                      timeout: 30000,
-                      headers: { 'User-Agent': userAgent }
-                    });
+      //           try {
+      //             let detailContent = '';
+      //             try {
+      //               console.log(`Fetching BizBuySell SBA detail page: ${detailUrl}`);
+      //               processedCount++;
+      //               const detailResponse = await axios.get(detailUrl, {
+      //                 httpsAgent,
+      //                 timeout: 30000,
+      //                 headers: { 'User-Agent': userAgent }
+      //               });
 
-                    detailContent = detailResponse.data;
-                    console.log(`BizBuySell SBA detail page fetched successfully for ${detailUrl}`);
+      //               detailContent = detailResponse.data;
+      //               console.log(`BizBuySell SBA detail page fetched successfully for ${detailUrl}`);
 
-                    const $detail = cheerio.load(detailContent);
-                    let extractedFinancials = {};
+      //               const $detail = cheerio.load(detailContent);
+      //               let extractedFinancials = {};
 
-                    $detail('.financials .specs p').each((_, el) => {
-                      const $el = $detail(el);
-                      const title = $el.find('.title').text().trim().toLowerCase();
-                      const value = $el.find('.normal, .price').first().text().trim();
+      //               $detail('.financials .specs p').each((_, el) => {
+      //                 const $el = $detail(el);
+      //                 const title = $el.find('.title').text().trim().toLowerCase();
+      //                 const value = $el.find('.normal, .price').first().text().trim();
 
-                      if (title.includes('asking price')) {
-                        extractedFinancials.askingPrice = value;
-                      } else if (title.includes('gross revenue')) {
-                        extractedFinancials.grossRevenue = value;
-                      } else if (title.includes('cash flow')) {
-                        extractedFinancials.cashFlow = value;
-                      } else if (title.includes('ebitda')) {
-                        extractedFinancials.ebitda = value;
-                      } else if (title.includes('established')) {
-                        extractedFinancials.established = value;
-                      }
-                    });
+      //                 if (title.includes('asking price')) {
+      //                   extractedFinancials.askingPrice = value;
+      //                 } else if (title.includes('gross revenue')) {
+      //                   extractedFinancials.grossRevenue = value;
+      //                 } else if (title.includes('cash flow')) {
+      //                   extractedFinancials.cashFlow = value;
+      //                 } else if (title.includes('ebitda')) {
+      //                   extractedFinancials.ebitda = value;
+      //                 } else if (title.includes('established')) {
+      //                   extractedFinancials.established = value;
+      //                 }
+      //               });
 
-                    let financialSummary = 'EXTRACTED FINANCIAL DATA:\n';
-                    Object.entries(extractedFinancials).forEach(([key, value]) => {
-                      financialSummary += `${key}: ${value}\n`;
-                    });
-                    console.log('Extracted financials:', extractedFinancials);
-                  } catch (detailErr) {
-                    console.error(`Failed to fetch BizBuySell SBA detail page ${detailUrl}:`, detailErr.message);
-                    detailContent = html;
-                  }
+      //               let financialSummary = 'EXTRACTED FINANCIAL DATA:\n';
+      //               Object.entries(extractedFinancials).forEach(([key, value]) => {
+      //                 financialSummary += `${key}: ${value}\n`;
+      //               });
+      //               console.log('Extracted financials:', extractedFinancials);
+      //             } catch (detailErr) {
+      //               console.error(`Failed to fetch BizBuySell SBA detail page ${detailUrl}:`, detailErr.message);
+      //               detailContent = html;
+      //             }
 
-                  let processedContent = financialSummary + '\n\n' + detailContent;
-                  if (processedContent.length > 50000) {
-                    processedContent = processedContent.substring(0, 50000) + '...';
-                  }
+      //             let processedContent = financialSummary + '\n\n' + detailContent;
+      //             if (processedContent.length > 50000) {
+      //               processedContent = processedContent.substring(0, 50000) + '...';
+      //             }
 
-                  const aiResp = await openai.chat.completions.create({
-                    model: 'gpt-4o',
-                    messages: [
-                      { role: 'system', content: systemPrompt },
-                      { role: 'user', content: `Extract business information from this HTML. Pay special attention to financial metrics like Asking Price, Gross Revenue, Cash Flow (SDE), EBITDA, and Rent:\n\n${processedContent}` }
-                    ],
-                    response_format: { type: 'json_object' },
-                    temperature: 0.1
-                  });
-                  const listing = JSON.parse(aiResp.choices[0].message.content);
+      //             const aiResp = await openai.chat.completions.create({
+      //               model: 'gpt-4o',
+      //               messages: [
+      //                 { role: 'system', content: systemPrompt },
+      //                 { role: 'user', content: `Extract business information from this HTML. Pay special attention to financial metrics like Asking Price, Gross Revenue, Cash Flow (SDE), EBITDA, and Rent:\n\n${processedContent}` }
+      //               ],
+      //               response_format: { type: 'json_object' },
+      //               temperature: 0.1
+      //             });
+      //             const listing = JSON.parse(aiResp.choices[0].message.content);
 
-                  if ((listing.revenue === 0 || listing.cashFlow === 0) && Object.keys(extractedFinancials).length > 0) {
-                    console.log('AI extraction missed financial data, using pre-extracted values...');
+      //             if ((listing.revenue === 0 || listing.cashFlow === 0) && Object.keys(extractedFinancials).length > 0) {
+      //               console.log('AI extraction missed financial data, using pre-extracted values...');
                     
-                    if (listing.revenue === 0 && extractedFinancials.grossRevenue) {
-                      const revenueValue = extractedFinancials.grossRevenue.replace(/[$,]/g, '');
-                      if (revenueValue && !isNaN(revenueValue)) {
-                        listing.revenue = parseInt(revenueValue);
-                        console.log(`Using pre-extracted revenue: $${listing.revenue}`);
-                      }
-                    }
+      //               if (listing.revenue === 0 && extractedFinancials.grossRevenue) {
+      //                 const revenueValue = extractedFinancials.grossRevenue.replace(/[$,]/g, '');
+      //                 if (revenueValue && !isNaN(revenueValue)) {
+      //                   listing.revenue = parseInt(revenueValue);
+      //                   console.log(`Using pre-extracted revenue: $${listing.revenue}`);
+      //                 }
+      //               }
                     
-                    if (listing.cashFlow === 0 && extractedFinancials.cashFlow) {
-                      const cashFlowValue = extractedFinancials.cashFlow.replace(/[$,]/g, '');
-                      if (cashFlowValue && !isNaN(cashFlowValue)) {
-                        listing.cashFlow = parseInt(cashFlowValue);
-                        console.log(`Using pre-extracted cash flow: $${listing.cashFlow}`);
-                      }
-                    }
+      //               if (listing.cashFlow === 0 && extractedFinancials.cashFlow) {
+      //                 const cashFlowValue = extractedFinancials.cashFlow.replace(/[$,]/g, '');
+      //                 if (cashFlowValue && !isNaN(cashFlowValue)) {
+      //                   listing.cashFlow = parseInt(cashFlowValue);
+      //                   console.log(`Using pre-extracted cash flow: $${listing.cashFlow}`);
+      //                 }
+      //               }
                     
-                    if (listing.price === 0 && extractedFinancials.askingPrice) {
-                      const priceValue = extractedFinancials.askingPrice.replace(/[$,]/g, '');
-                      if (priceValue && !isNaN(priceValue)) {
-                        listing.price = parseInt(priceValue);
-                        console.log(`Using pre-extracted price: $${listing.price}`);
-                      }
-                    }
-                  }
+      //               if (listing.price === 0 && extractedFinancials.askingPrice) {
+      //                 const priceValue = extractedFinancials.askingPrice.replace(/[$,]/g, '');
+      //                 if (priceValue && !isNaN(priceValue)) {
+      //                   listing.price = parseInt(priceValue);
+      //                   console.log(`Using pre-extracted price: $${listing.price}`);
+      //                 }
+      //               }
+      //             }
 
-                  if (!listing.scrapedData) {
-                    listing.scrapedData = {};
-                  }
+      //             if (!listing.scrapedData) {
+      //               listing.scrapedData = {};
+      //             }
 
-                  listing.scrapedData = {
-                    source: 'BizBuySell',
-                    detailUrl: detailUrl,
-                    priceText: extractedFinancials.askingPrice || 'Not found',
-                    revenueText: extractedFinancials.grossRevenue || 'Not found',
-                    cashFlowText: extractedFinancials.cashFlow || 'Not found'
-                  };
-                  listing.businessId = detailUrl || listing.businessId;
-                  listing.sbaPreApproved = true;
+      //             listing.scrapedData = {
+      //               source: 'BizBuySell',
+      //               detailUrl: detailUrl,
+      //               priceText: extractedFinancials.askingPrice || 'Not found',
+      //               revenueText: extractedFinancials.grossRevenue || 'Not found',
+      //               cashFlowText: extractedFinancials.cashFlow || 'Not found'
+      //             };
+      //             listing.businessId = detailUrl || listing.businessId;
+      //             listing.sbaPreApproved = true;
 
-                  if (!listing.sourceContent) {
-                    listing.sourceContent = {
-                      content: detailContent,
-                      scrapedAt: new Date(),
-                      financials: [],
-                      detailedInfo: []
-                    };
-                  }
+      //             if (!listing.sourceContent) {
+      //               listing.sourceContent = {
+      //                 content: detailContent,
+      //                 scrapedAt: new Date(),
+      //                 financials: [],
+      //                 detailedInfo: []
+      //               };
+      //             }
 
-                  console.log(`Extracted BizBuySell SBA listing:`);
-                  console.log(`   Business ID: ${listing.businessId}`);
-                  console.log(`   Name: ${listing.name}`);
-                  console.log(`   Price: $${listing.price.toLocaleString()}`);
-                  console.log(`   Revenue: $${listing.revenue.toLocaleString()}`);
-                  console.log(`   Cash Flow: $${listing.cashFlow.toLocaleString()}`);
-                  console.log(`   Raw price text: ${listing.scrapedData?.priceText || 'N/A'}`);
-                  console.log(`   Raw revenue text: ${listing.scrapedData?.revenueText || 'N/A'}`);
-                  console.log(`   Location: ${listing.location.city}, ${listing.location.state}`);
-                  console.log(`   Sector: ${listing.sector}`);
-                  console.log(`   SBA Pre-approved: ${listing.sbaPreApproved}`);
-                  console.log(`   Financials count: ${listing.sourceContent?.financials?.length || 0}`);
-                  console.log('---');
-                  allListings.push(listing);
-                  await sleep(2000);
-                } catch (err) {
-                  console.error(`BizBuySell SBA parse error on page ${pageNum}:`, err.message);
-                }
-              }
-            } catch (err) {
-              console.error(`Error fetching BizBuySell SBA page ${pageNum}:`, err.message);
-              console.log(`Skipping to next site due to BizBuySell SBA page ${pageNum} failure`);
-              throw new Error(`Failed to scrape BizBuySell SBA page ${pageNum}`);
-            }
-            await sleep(5000);
-          }
-        }
-      },
+      //             console.log(`Extracted BizBuySell SBA listing:`);
+      //             console.log(`   Business ID: ${listing.businessId}`);
+      //             console.log(`   Name: ${listing.name}`);
+      //             console.log(`   Price: $${listing.price.toLocaleString()}`);
+      //             console.log(`   Revenue: $${listing.revenue.toLocaleString()}`);
+      //             console.log(`   Cash Flow: $${listing.cashFlow.toLocaleString()}`);
+      //             console.log(`   Raw price text: ${listing.scrapedData?.priceText || 'N/A'}`);
+      //             console.log(`   Raw revenue text: ${listing.scrapedData?.revenueText || 'N/A'}`);
+      //             console.log(`   Location: ${listing.location.city}, ${listing.location.state}`);
+      //             console.log(`   Sector: ${listing.sector}`);
+      //             console.log(`   SBA Pre-approved: ${listing.sbaPreApproved}`);
+      //             console.log(`   Financials count: ${listing.sourceContent?.financials?.length || 0}`);
+      //             console.log('---');
+      //             allListings.push(listing);
+      //             await sleep(2000);
+      //           } catch (err) {
+      //             console.error(`BizBuySell SBA parse error on page ${pageNum}:`, err.message);
+      //           }
+      //         }
+      //       } catch (err) {
+      //         console.error(`Error fetching BizBuySell SBA page ${pageNum}:`, err.message);
+      //         console.log(`Skipping to next site due to BizBuySell SBA page ${pageNum} failure`);
+      //         throw new Error(`Failed to scrape BizBuySell SBA page ${pageNum}`);
+      //       }
+      //       await sleep(5000);
+      //     }
+      //   }
+      // },
       {
         name: 'SunbeltNetwork',
         scrape: async () => {
