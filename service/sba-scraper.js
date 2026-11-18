@@ -51,7 +51,7 @@ const scrapeBusinesses = async () => {
   let browser;
   try {
     console.log('Connecting to MongoDB...');
-    const uri = 'mongodb+srv://willhawkins242:88AH3Xtx2Tv7JFzm@bizdealcluster.6t7fszb.mongodb.net/bizdeal?retryWrites=true&w=majority&tls=true&tlsAllowInvalidCertificates=false';
+    const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/bizdeal';
     await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000 });
     console.log(`MongoDB connected to ${mongoose.connection.host}:${mongoose.connection.port}/${mongoose.connection.db.databaseName}`);
 
