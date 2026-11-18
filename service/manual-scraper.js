@@ -10,7 +10,7 @@ puppeteer.use(AnonymizeUAPlugin());
 
 const Business = require('../models/business'); // Adjust path as needed
 const UserPreferences = require('../models/userPreferences'); // Adjust path as needed
-const openai = new OpenAI({ apiKey: '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' });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
