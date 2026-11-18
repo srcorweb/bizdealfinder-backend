@@ -69,7 +69,16 @@ const businessSchema = new mongoose.Schema({
     confidence: Number
   },
   aiGeneratedDescription: { type: String, default: '' },
-  descriptionEmbedding: { type: [Number], default: null }, // New vector field
+  descriptionEmbedding: { type: [Number], default: null },
+  isUserImported: {
+    type: Boolean,
+    default: false
+  },
+  importedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false
+  },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

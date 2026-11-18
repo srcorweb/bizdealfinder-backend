@@ -1182,4 +1182,162 @@ const scrapeBusinesses = async () => {
   }
 };
 
-module.exports = { scrapeBusinesses };
+// Function to scrape a single listing by URL
+const scrapeSingleListing = async (url, source) => {
+  let browser;
+  try {
+    console.log(`Scraping single listing from ${source}: ${url}`);
+    
+    const systemPrompt = `Extract structured data from HTML of a business listing detail page... [use the same systemPrompt from scrapeBusinesses function]`;
+
+    let detailContent = '';
+    let financials = [];
+    let detailedInfo = [];
+
+    if (source === 'BizBuySell') {
+      const httpsAgent = new https.Agent({ ALPNProtocols: ['http/1.1'] });
+      const response = await axios.get(url, {
+        httpsAgent,
+        timeout: 30000,
+        headers: { 
+          'User-Agent': 'Safari/17612.3.14.1.6 CFNetwork/1327.0.4 Darwin/21.2.0' 
+        }
+      });
+      detailContent = response.data;
+      
+      const $ = cheerio.load(detailContent);
+      
+      // Extract financial data
+      financials = [];
+      $('.financials p').each((_, el) => {
+        const key = $(el).find('.title').text().trim();
+        let value = $(el).find('.normal').text().trim().replace(/[^0-9.$]/g, '');
+        if (key && value && !['N/A', 'Not Disclosed'].includes(value)) {
+          if (key === 'Rent') value = value.replace(' per Month', '');
+          financials.push({ key, value });
+        }
+      });
+
+      // Extract detailed information
+      detailedInfo = [];
+      $('#ctl00_ctl00_Content_ContentPlaceHolder1_wideProfile_listingDetails_dlDetailedInformation dt').each((i, dt) => {
+        const key = $(dt).find('.normal').text().trim();
+        let value = $(dt).next('dd').text().trim();
+        if (key === 'Established' && value.match(/^\d{4}$/)) {
+          value = (2025 - parseInt(value)).toString();
+        }
+        if (key && value && !['N/A', 'Not Disclosed'].includes(value)) {
+          detailedInfo.push({ key, value });
+        }
+      });
+
+    } else if (source === 'Sunbelt Network') {
+      const httpsAgent = new https.Agent({ rejectUnauthorized: false, maxVersion: 'TLSv1.2' });
+      const response = await axios.get(url, {
+        timeout: 30000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        httpsAgent
+      });
+      detailContent = response.data;
+      
+      const $ = cheerio.load(detailContent);
+      
+      // Extract financials
+      financials = [];
+      $('.resultsBusiness__detailsFinancial--item ul.valuesItems li').each((_, el) => {
+        const key = $(el).find('.resultsBusiness__detailsFinancial--itemSpan').text().trim();
+        let value = $(el).find('.resultsBusiness__detailsFinancial--itemStrong').text().trim();
+        if (key && value && !['N/A', 'Not Disclosed', 'On request'].includes(value)) {
+          value = value.replace(/[^0-9.$]/g, '');
+          if (value.startsWith('$')) {
+            value = `$${parseInt(value.replace(/[^0-9]/g, '')).toLocaleString()}`;
+          }
+          financials.push({ key, value });
+        }
+      });
+
+      // Extract detailed information
+      detailedInfo = [];
+      $('.resultsBusiness__detailsInformation ul li').each((_, el) => {
+        const key = $(el).find('strong').text().trim().replace(':', '');
+        let value = $(el).find('span').text().trim();
+        if (key === 'Year Established' && value.match(/^\d{4}$/)) {
+          value = (2025 - parseInt(value)).toString();
+        }
+        if (key && value && !['N/A', 'Not Disclosed'].includes(value)) {
+          detailedInfo.push({ key, value });
+        }
+      });
+
+    } else if (source === 'Flippa' || source === 'DealStream' || source === 'BusinessForSale') {
+      browser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        protocolTimeout: 120000
+      });
+      
+      const page = await browser.newPage();
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+      await page.setViewport({ width: 1280, height: 800 });
+      
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+      detailContent = await page.content();
+      
+      // Use extractMetricsFromDescription helper
+      const $ = cheerio.load(detailContent);
+      const description = $('body').text().trim();
+      const descMetrics = await extractMetricsFromDescription(description);
+      financials = descMetrics.filter(m => 
+        ['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow'].includes(m.key)
+      );
+      detailedInfo = descMetrics.filter(m => 
+        !['Asking Price', 'Gross Revenue', 'Revenue', 'Cash Flow'].includes(m.key)
+      );
+      
+      await browser.close();
+      browser = null;
+    }
+
+    // Process with AI
+    let processedContent = detailContent;
+    if (processedContent.length > 50000) {
+      processedContent = processedContent.substring(0, 50000) + '...';
+    }
+
+    const aiResp = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: processedContent }
+      ],
+      response_format: { type: 'json_object' }
+    });
+
+    const listing = JSON.parse(aiResp.choices[0].message.content);
+    listing.scrapedData.source = source;
+    listing.scrapedData.detailUrl = url;
+    listing.businessId = url;
+    listing.sourceContent = {
+      content: detailContent,
+      scrapedAt: new Date(),
+      financials,
+      detailedInfo
+    };
+
+    console.log(`Successfully scraped listing: ${listing.name}`);
+    return listing;
+
+  } catch (error) {
+    console.error('Single listing scrape error:', error);
+    if (error.response?.status === 404) {
+      throw new Error('Listing not found (404). Please check the URL.');
+    }
+    throw new Error(`Failed to scrape listing: ${error.message}`);
+  } finally {
+    if (browser) await browser.close();
+  }
+};
+
+module.exports = { scrapeBusinesses, scrapeSingleListing };
